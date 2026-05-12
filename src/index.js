@@ -78,10 +78,14 @@ const startServer = async () => {
 
   const PORT = process.env.PORT || 8080;
   server.listen(PORT, () => {
+    const twilioPackage = require('twilio/package.json');
     console.log(`
       🚀 MuteChat Backend running in ${process.env.NODE_ENV || 'development'} mode
       🔗 Port: ${PORT}
       ⚡ Socket.IO initialized
+      📦 Twilio SDK Version: ${twilioPackage.version}
+      🔑 Service SID: ${process.env.TWILIO_SERVICE_SID}
+      📅 Deployment Time: ${new Date().toISOString()}
     `);
   });
 
