@@ -26,6 +26,9 @@ class SocketManager {
         this.onlineUsers.set(userId, socket.id);
         socket.userId = userId;
         
+        // Join personal room for targeted events
+        socket.join(userId);
+        
         await User.findByIdAndUpdate(userId, { 
           onlineStatus: true,
           lastSeen: Date.now() 
@@ -91,8 +94,15 @@ class SocketManager {
           this.io.to(chat._id.toString()).emit('receive_message', messageToEmit);
           
           // Also emit to chat list for both users to update last message
-          this.io.emit(`chat_update_${sender}`, chat);
-          this.io.emit(`chat_update_${receiver}`, chat);
+          const updatedChat = await Chat.findById(chat._id)
+            .populate('participants', 'name mobileNumber avatar onlineStatus lastSeen')
+            .populate({
+              path: 'lastMessage',
+              populate: { path: 'sender', select: 'name' },
+            });
+
+          this.io.to(sender).emit(`chat_update_${sender}`, updatedChat);
+          this.io.to(receiver).emit(`chat_update_${receiver}`, updatedChat);
 
         } catch (error) {
           console.error('Socket error (send_message):', error);
