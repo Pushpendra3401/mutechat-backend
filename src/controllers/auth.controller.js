@@ -6,42 +6,21 @@ const twilioService = require('../services/twilioService');
 const jwtService = require('../services/jwtService');
 
 /**
- * @desc    Register a new user (Legacy/Email flow)
+ * @desc    Register a new user (Legacy/Email flow - DEPRECATED)
  * @route   POST /auth/register
  * @access  Public
  */
 const registerUser = asyncHandler(async (req, res) => {
-  const { name, email, password, avatar } = req.body;
-
-  const userExists = await User.findOne({ $or: [{ email }, { mobileNumber: req.body.mobileNumber }] });
-  if (userExists) {
-    throw new ApiError(400, 'User already exists');
-  }
-
-  const user = await User.create({ name, email, password, avatar });
-  const token = user.getSignedJwtToken();
-
-  res.status(201).json(new ApiResponse(201, { user, token }, 'User registered successfully'));
+  throw new ApiError(410, 'Email registration is deprecated. Please use OTP.');
 });
 
 /**
- * @desc    Login user (Legacy/Email flow)
+ * @desc    Login user (Legacy/Email flow - DEPRECATED)
  * @route   POST /auth/login
  * @access  Public
  */
 const loginUser = asyncHandler(async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) {
-    throw new ApiError(400, 'Please provide an email and password');
-  }
-
-  const user = await User.findOne({ email }).select('+password');
-  if (!user || !(await user.matchPassword(password))) {
-    throw new ApiError(401, 'Invalid credentials');
-  }
-
-  const token = user.getSignedJwtToken();
-  res.status(200).json(new ApiResponse(200, { user, token }, 'Login successful'));
+  throw new ApiError(410, 'Email login is deprecated. Please use OTP.');
 });
 
 /**
@@ -92,11 +71,10 @@ const verifyOtp = asyncHandler(async (req, res) => {
       throw new ApiError(400, 'Name is required for new registration via OTP');
     }
     
-    // Create new user (No email required anymore)
+    // Create new user (No email or password required anymore)
     user = await User.create({
       mobileNumber,
       name,
-      password: Math.random().toString(36).slice(-10), // Random password for schema compliance
       onlineStatus: true,
     });
     console.log('[Auth] New user created:', user._id);

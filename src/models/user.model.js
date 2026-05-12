@@ -17,8 +17,10 @@ const userSchema = new mongoose.Schema(
     },
     email: {
       type: String,
-      unique: true,
-      sparse: true, // Allows multiple null/missing emails
+      unique: false, // REMOVED uniqueness to fix duplicate null key error
+      required: false,
+      trim: true,
+      lowercase: true,
       match: [
         /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/,
         'Please add a valid email',
@@ -26,7 +28,7 @@ const userSchema = new mongoose.Schema(
     },
     password: {
       type: String,
-      required: [true, 'Please add a password'],
+      required: false, // Password no longer required for OTP-only auth
       minlength: 6,
       select: false,
     },
