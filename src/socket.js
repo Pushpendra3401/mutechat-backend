@@ -66,7 +66,7 @@ class SocketManager {
         try {
           // Find or Create Chat if not exists
           let chat;
-          if (chatId && !chatId.startsWith('new_')) {
+          if (chatId) {
             chat = await Chat.findById(chatId);
           } else {
             chat = await Chat.findOne({
