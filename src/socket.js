@@ -3,6 +3,7 @@ const Message = require('./models/message.model');
 const Chat = require('./models/chat.model');
 const User = require('./models/user.model');
 const Call = require('./models/call.model');
+const notificationService = require('./services/notificationService');
 
 class SocketManager {
   constructor(server) {
@@ -184,16 +185,39 @@ class SocketManager {
 
       // 6. Call signaling
       socket.on('call_user', async (data) => {
-        const { callerId, receiverId, type, channelName } = data;
+        const { callerId, receiverId, type, channelName, chatId } = data;
         console.log(`[Socket] Call from ${callerId} to ${receiverId} (${type}) on channel ${channelName}`);
 
+        // 1. Get caller and receiver details
+        const [caller, receiver] = await Promise.all([
+          User.findById(callerId),
+          User.findById(receiverId)
+        ]);
+
+        if (!caller || !receiver) {
+          console.error('[Socket] Caller or Receiver not found');
+          return;
+        }
+
+        // 2. Emit socket event for foreground users
         console.log(`[Socket] Emitting incoming_call to receiver room: ${receiverId}`);
         this.io.to(receiverId).emit('incoming_call', {
           callerId,
+          callerName: caller.name,
+          callerAvatar: caller.avatar,
           type,
           channelName,
+          chatId,
         });
 
+        // 3. Send Push Notification for background/killed users
+        notificationService.sendCallNotification(receiver, caller, {
+          type,
+          channelName,
+          chatId
+        }).catch(err => console.error('[Socket] Error sending call push:', err));
+
+        // 4. Create call record
         await Call.create({
           caller: callerId,
           receiver: receiverId,
