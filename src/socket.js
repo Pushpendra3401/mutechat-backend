@@ -3,7 +3,6 @@ const Message = require('./models/message.model');
 const Chat = require('./models/chat.model');
 const User = require('./models/user.model');
 const Call = require('./models/call.model');
-const notificationService = require('./services/notificationService');
 
 class SocketManager {
   constructor(server) {
@@ -210,14 +209,7 @@ class SocketManager {
           chatId,
         });
 
-        // 3. Send Push Notification for background/killed users
-        notificationService.sendCallNotification(receiver, caller, {
-          type,
-          channelName,
-          chatId
-        }).catch(err => console.error('[Socket] Error sending call push:', err));
-
-        // 4. Create call record
+        // 3. Create call record
         await Call.create({
           caller: callerId,
           receiver: receiverId,

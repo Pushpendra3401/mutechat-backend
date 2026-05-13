@@ -11,6 +11,10 @@ exports.generateToken = (channelName, uid, role = 'publisher') => {
   const appId = process.env.AGORA_APP_ID;
   const appCertificate = process.env.AGORA_APP_CERTIFICATE;
   
+  console.log(`[AgoraService] Generating token for channel: ${channelName}, uid: ${uid}`);
+  console.log(`[AgoraService] App ID: ${appId ? 'Configured' : 'MISSING'}`);
+  console.log(`[AgoraService] App Certificate: ${appCertificate ? 'Configured' : 'MISSING'}`);
+
   if (!appId || !appCertificate) {
     throw new Error('Agora credentials are missing');
   }
@@ -29,5 +33,6 @@ exports.generateToken = (channelName, uid, role = 'publisher') => {
     privilegeExpiredTs
   );
 
+  console.log(`[AgoraService] Token generated successfully (length: ${token.length})`);
   return token;
 };

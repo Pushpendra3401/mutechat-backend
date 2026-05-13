@@ -11,6 +11,7 @@ const ApiError = require('../utils/ApiError');
  */
 exports.getCallToken = asyncHandler(async (req, res) => {
   const { channelName, uid } = req.body;
+  console.log(`[Agora] Token request for channel: ${channelName}, uid: ${uid}`);
 
   if (!channelName) {
     throw new ApiError(400, 'Channel name is required');
@@ -21,11 +22,13 @@ exports.getCallToken = asyncHandler(async (req, res) => {
   
   try {
     const token = agoraService.generateToken(channelName, tokenUid);
+    console.log(`[Agora] Generated token: ${token.substring(0, 10)}... for channel: ${channelName}`);
     res.status(200).json(new ApiResponse(200, { 
       token,
       appId: process.env.AGORA_APP_ID 
     }, 'Token generated successfully'));
   } catch (error) {
+    console.error(`[Agora] Token generation failed: ${error.message}`);
     throw new ApiError(500, error.message);
   }
 });
