@@ -30,6 +30,9 @@ class SocketManager {
         this.onlineUsers.set(userId, socket.id);
         socket.userId = userId;
         console.log(`[Socket] User ${userId} joined their personal room (${socket.id})`);
+        console.log(`[Socket] Current rooms for this socket:`, Array.from(socket.rooms));
+        
+        socket.emit('connected');
         
         // Mark user as online
         User.findByIdAndUpdate(userId, { 
@@ -109,15 +112,18 @@ class SocketManager {
             .populate('replyTo');
 
           // Emit to receiver's personal room (for instant delivery anywhere)
+          console.log(`[Socket] Emitting receive_message to receiver: ${receiver}`);
           this.io.to(receiver).emit('receive_message', messageToEmit);
           
           // Emit back to sender with tempId for optimistic UI sync
+          console.log(`[Socket] Emitting message_sent to sender: ${sender}`);
           this.io.to(sender).emit('message_sent', {
             message: messageToEmit,
             tempId: tempId
           });
 
           // Also emit to the specific chat room
+          console.log(`[Socket] Emitting receive_message to chat room: ${chat._id}`);
           this.io.to(chat._id.toString()).emit('receive_message', messageToEmit);
           
           // Update chat list for both users
@@ -179,8 +185,9 @@ class SocketManager {
       // 6. Call signaling
       socket.on('call_user', async (data) => {
         const { callerId, receiverId, type, channelName } = data;
-        console.log(`[Socket] Call from ${callerId} to ${receiverId} (${type})`);
+        console.log(`[Socket] Call from ${callerId} to ${receiverId} (${type}) on channel ${channelName}`);
 
+        console.log(`[Socket] Emitting incoming_call to receiver room: ${receiverId}`);
         this.io.to(receiverId).emit('incoming_call', {
           callerId,
           type,
@@ -193,7 +200,7 @@ class SocketManager {
           type,
           channelName,
           status: 'ongoing',
-        });
+        }).catch(err => console.error('[Socket] Error creating call record:', err));
       });
 
       socket.on('accept_call', (data) => {
