@@ -21,7 +21,10 @@ exports.getCallToken = asyncHandler(async (req, res) => {
   
   try {
     const token = agoraService.generateToken(channelName, tokenUid);
-    res.status(200).json(new ApiResponse(200, { token }, 'Token generated successfully'));
+    res.status(200).json(new ApiResponse(200, { 
+      token,
+      appId: process.env.AGORA_APP_ID 
+    }, 'Token generated successfully'));
   } catch (error) {
     throw new ApiError(500, error.message);
   }
