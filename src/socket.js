@@ -185,7 +185,8 @@ class SocketManager {
       // 6. Call signaling
       socket.on('call_user', async (data) => {
         const { callerId, receiverId, type, channelName, chatId } = data;
-        console.log(`[Socket] Call from ${callerId} to ${receiverId} (${type}) on channel ${channelName}`);
+        console.log(`[Socket] Call initiated: from ${callerId} to ${receiverId} (${type})`);
+        console.log(`[Socket] Channel: ${channelName}, Chat: ${chatId}`);
 
         // 1. Get caller and receiver details
         const [caller, receiver] = await Promise.all([
@@ -194,12 +195,12 @@ class SocketManager {
         ]);
 
         if (!caller || !receiver) {
-          console.error('[Socket] Caller or Receiver not found');
+          console.error('[Socket] Call failed: Caller or Receiver not found in database');
           return;
         }
 
         // 2. Emit socket event for foreground users
-        console.log(`[Socket] Emitting incoming_call to receiver room: ${receiverId}`);
+        console.log(`[Socket] Emitting incoming_call to receiver personal room: ${receiverId}`);
         this.io.to(receiverId).emit('incoming_call', {
           callerId,
           callerName: caller.name,

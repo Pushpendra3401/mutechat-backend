@@ -25,6 +25,41 @@ exports.getChats = asyncHandler(async (req, res) => {
 });
 
 /**
+ * @desc    Create or get a chat with another user
+ * @route   POST /api/v1/chat
+ * @access  Private
+ */
+exports.createOrGetChat = asyncHandler(async (req, res) => {
+  const senderId = req.user._id;
+  const { userId } = req.body;
+
+  console.log(`[Chat] Incoming POST /chat request from ${senderId} to access chat with ${userId}`);
+
+  if (!userId) {
+    throw new ApiError(400, 'userId is required');
+  }
+
+  let chat = await Chat.findOne({
+    participants: {
+      $all: [senderId, userId],
+      $size: 2,
+    },
+  });
+
+  if (!chat) {
+    chat = await Chat.create({
+      participants: [senderId, userId],
+    });
+
+    console.log('[Chat] new chat created:', chat._id);
+    return res.status(201).json(new ApiResponse(201, chat, 'Chat created successfully'));
+  } else {
+    console.log('[Chat] existing chat found:', chat._id);
+    return res.status(200).json(new ApiResponse(200, chat, 'Existing chat found'));
+  }
+});
+
+/**
  * @desc    Get messages for a specific chat
  * @route   GET /api/v1/chat/:chatId/messages
  * @access  Private
