@@ -19,8 +19,8 @@ const callSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['ongoing', 'ended', 'rejected', 'missed', 'busy'],
-      default: 'ongoing',
+      enum: ['initiated', 'ringing', 'accepted', 'rejected', 'missed', 'ended', 'busy'],
+      default: 'initiated',
     },
     channelName: {
       type: String,

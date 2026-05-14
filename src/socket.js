@@ -215,97 +215,133 @@ class SocketManager {
         const { callerId, receiverId, type, channelName, chatId } = data;
         
         if (!callerId || !receiverId || !channelName) {
-          console.error('[Socket] Call failed: Missing required data');
+          console.error('[CALL] Creation failed: Missing required data');
           return;
         }
 
-        console.log(`[Socket] CALL: From ${callerId} to ${receiverId} (${type}). Channel: ${channelName}`);
+        console.log(`[CALL] Initiating: From ${callerId} to ${receiverId} (${type}). Channel: ${channelName}`);
 
-        const [caller, receiver] = await Promise.all([
-          User.findById(callerId),
-          User.findById(receiverId)
-        ]);
+        try {
+          const [caller, receiver] = await Promise.all([
+            User.findById(callerId),
+            User.findById(receiverId)
+          ]);
 
-        if (!caller || !receiver) {
-          console.error('[Socket] Call failed: User not found');
-          return;
+          if (!caller || !receiver) {
+            console.error('[CALL] User not found');
+            return;
+          }
+
+          // 1. Create and Save Call Record FIRST
+          console.log('[CALL] Creating call record in DB...');
+          const callRecord = await Call.create({
+            caller: callerId,
+            receiver: receiverId,
+            type,
+            channelName,
+            status: 'initiated', // Standardized state
+          });
+          console.log(`[CALL] Call record saved successfully: ${callRecord._id}`);
+
+          // 2. Emit to receiver ONLY after record is saved
+          console.log(`[CALL] Emitting incoming_call to receiver: ${receiverId}`);
+          this.io.to(receiverId).emit('incoming_call', {
+            callerId,
+            callerName: caller.name,
+            callerAvatar: caller.avatar,
+            type,
+            channelName,
+            chatId,
+          });
+
+        } catch (error) {
+          console.error('[CALL] FATAL ERROR in call_user:', error.message);
+          // If creation fails, notify caller
+          this.io.to(callerId).emit('call_error', { message: 'Failed to initiate call' });
         }
-
-        // Emit to receiver
-        this.io.to(receiverId).emit('incoming_call', {
-          callerId,
-          callerName: caller.name,
-          callerAvatar: caller.avatar,
-          type,
-          channelName,
-          chatId,
-        });
-
-        // Store call record
-        await Call.create({
-          caller: callerId,
-          receiver: receiverId,
-          type,
-          channelName,
-          status: 'ringing',
-        }).catch(err => console.error('[Socket] Call record error:', err));
       });
 
-      socket.on('call_ringing', (data) => {
+      socket.on('call_ringing', async (data) => {
         const { callerId, channelName } = data;
-        console.log(`[Socket] CALL RINGING: Channel ${channelName} for caller ${callerId}`);
-        this.io.to(callerId).emit('call_ringing', { channelName });
+        console.log(`[CALL] RINGING: Channel ${channelName} for caller ${callerId}`);
+        
+        try {
+          await Call.findOneAndUpdate(
+            { channelName, status: 'initiated' },
+            { status: 'ringing' }
+          );
+          this.io.to(callerId).emit('call_ringing', { channelName });
+        } catch (error) {
+          console.error('[CALL] Ringing update error:', error.message);
+        }
       });
 
-      socket.on('call_busy', (data) => {
+      socket.on('call_busy', async (data) => {
         const { callerId, channelName } = data;
-        console.log(`[Socket] CALL BUSY: Channel ${channelName} for caller ${callerId}`);
-        this.io.to(callerId).emit('call_busy', { channelName });
+        console.log(`[CALL] BUSY: Channel ${channelName} for caller ${callerId}`);
+        
+        try {
+          await Call.findOneAndUpdate(
+            { channelName, status: 'initiated' },
+            { status: 'busy' }
+          );
+          this.io.to(callerId).emit('call_busy', { channelName });
+        } catch (error) {
+          console.error('[CALL] Busy update error:', error.message);
+        }
       });
 
       socket.on('accept_call', async (data) => {
         const { callerId, channelName } = data;
         const receiverId = socket.userId;
         
-        console.log(`[Socket] CALL ACCEPTED: By ${receiverId} for caller ${callerId}`);
+        console.log(`[CALL] ACCEPTED: By ${receiverId} for caller ${callerId}`);
         
-        // Notify caller
-        this.io.to(callerId).emit('call_accepted', { 
-          channelName,
-          receiverId 
-        });
+        try {
+          // Update call record to accepted
+          await Call.findOneAndUpdate(
+            { channelName, status: { $in: ['initiated', 'ringing'] } },
+            { status: 'accepted', startTime: Date.now() }
+          );
 
-        // Update call record
-        await Call.findOneAndUpdate(
-          { channelName, status: 'ringing' },
-          { status: 'ongoing' }
-        ).catch(err => console.error('[Socket] Call update error:', err));
+          // Notify caller
+          this.io.to(callerId).emit('call_accepted', { 
+            channelName,
+            receiverId 
+          });
+        } catch (error) {
+          console.error('[CALL] Accept update error:', error.message);
+        }
       });
 
       socket.on('reject_call', async (data) => {
         const { callerId, channelName } = data;
-        console.log(`[Socket] CALL REJECTED: By ${socket.userId} for caller ${callerId}`);
+        console.log(`[CALL] REJECTED: By ${socket.userId} for caller ${callerId}`);
         
-        this.io.to(callerId).emit('call_rejected', { channelName });
-
-        // Update call record
-        await Call.findOneAndUpdate(
-          { channelName, status: 'ringing' },
-          { status: 'rejected' }
-        ).catch(err => console.error('[Socket] Call update error:', err));
+        try {
+          await Call.findOneAndUpdate(
+            { channelName, status: { $in: ['initiated', 'ringing'] } },
+            { status: 'rejected' }
+          );
+          this.io.to(callerId).emit('call_rejected', { channelName });
+        } catch (error) {
+          console.error('[CALL] Reject update error:', error.message);
+        }
       });
 
       socket.on('end_call', async (data) => {
         const { otherUserId, channelName } = data;
-        console.log(`[Socket] CALL ENDED: Between ${socket.userId} and ${otherUserId}`);
+        console.log(`[CALL] ENDED: Between ${socket.userId} and ${otherUserId}`);
         
-        this.io.to(otherUserId).emit('call_ended', { channelName });
-
-        // Update call record
-        await Call.findOneAndUpdate(
-          { channelName, status: 'ongoing' },
-          { status: 'completed', endedAt: Date.now() }
-        ).catch(err => console.error('[Socket] Call update error:', err));
+        try {
+          await Call.findOneAndUpdate(
+            { channelName, status: { $ne: 'ended' } },
+            { status: 'ended', endTime: Date.now() }
+          );
+          this.io.to(otherUserId).emit('call_ended', { channelName });
+        } catch (error) {
+          console.error('[CALL] End update error:', error.message);
+        }
       });
 
       // 7. Disconnect
