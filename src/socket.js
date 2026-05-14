@@ -26,11 +26,18 @@ class SocketManager {
           console.error('[Socket] Setup failed: No userId provided');
           return;
         }
+        
+        // Cleanup old room if any
+        if (socket.userId && socket.userId !== userId) {
+          socket.leave(socket.userId);
+          this.onlineUsers.delete(socket.userId);
+        }
+
         socket.join(userId);
         this.onlineUsers.set(userId, socket.id);
         socket.userId = userId;
-        console.log(`[Socket] User ${userId} joined their personal room (${socket.id})`);
-        console.log(`[Socket] Current rooms for this socket:`, Array.from(socket.rooms));
+        
+        console.log(`[Socket] User ${userId} setup complete. Socket: ${socket.id}`);
         
         socket.emit('connected');
         
@@ -38,119 +45,137 @@ class SocketManager {
         User.findByIdAndUpdate(userId, { 
           onlineStatus: true,
           lastSeen: Date.now() 
-        }).then(() => {
-          console.log(`[Socket] User ${userId} status updated to online`);
-        }).catch(err => console.error('[Socket] Error updating user status:', err));
+        }).then(async () => {
+          this.io.emit('online_status', { userId, status: true });
+          
+          // Mark pending messages as delivered
+          const result = await Message.updateMany(
+            { receiver: userId, status: 'sent' },
+            { status: 'delivered' }
+          );
+          
+          if (result.modifiedCount > 0) {
+            console.log(`[Socket] Marked ${result.modifiedCount} messages as delivered for ${userId}`);
+            // Notify senders? Usually, WhatsApp does this. 
+            // For simplicity, we can let the next chat_update or a specific event handle it.
+            // Let's emit a global event or just rely on the next interaction.
+            // Actually, we should notify the senders.
+            const sentMessages = await Message.find({ receiver: userId, status: 'delivered' }).distinct('chat');
+            sentMessages.forEach(chatId => {
+               this.io.to(chatId.toString()).emit('messages_marked_delivered', { chatId, userId });
+            });
+          }
+        }).catch(err => console.error('[Socket] Status update error:', err));
 
         this.io.emit('online_users', Array.from(this.onlineUsers.keys()));
       });
 
-      // Legacy support for user_connected
-      socket.on('user_connected', (userId) => {
-        socket.emit('setup', userId);
-      });
-
-      // 2. Joining chat room
+      // 2. Room Management
       socket.on('join_chat', (chatId) => {
         if (!chatId) return;
         socket.join(chatId);
-        console.log(`[Socket] User ${socket.userId} joined chat room: ${chatId}`);
+        console.log(`[Socket] User ${socket.userId} joined room: ${chatId}`);
       });
 
-      // 3. Send Message
-      socket.on('send_message', async (data) => {
+      socket.on('leave_chat', (chatId) => {
+        if (!chatId) return;
+        socket.leave(chatId);
+        console.log(`[Socket] User ${socket.userId} left room: ${chatId}`);
+      });
+
+      // 3. Send Message (with Acknowledgement)
+      socket.on('send_message', async (data, callback) => {
         const { sender, receiver, text, media, replyTo, chatId, tempId } = data;
 
-        console.log(`[Socket] Message from ${sender} to ${receiver}: ${text || '[Media]'}`);
+        if (!sender || !receiver || !chatId) {
+          console.error(`[Socket] ERROR: Missing data for message from ${socket.userId}. ChatId: ${chatId}`);
+          if (callback) callback({ status: 'error', message: 'Missing data' });
+          return;
+        }
+
+        console.log(`[Socket] MESSAGE: From ${sender} to ${receiver} in chat ${chatId}. Text: ${text?.substring(0, 20)}...`);
 
         try {
-          // Find or Create Chat if not exists
-          let chat;
-          if (chatId) {
-            chat = await Chat.findById(chatId);
-          } else {
-            chat = await Chat.findOne({
-              participants: { $all: [sender, receiver] },
-            });
-
-            if (!chat) {
-              chat = await Chat.create({
-                participants: [sender, receiver],
-              });
-              console.log(`[Socket] New chat created: ${chat._id}`);
-            }
-          }
-
-          if (!chat) {
-            console.error('[Socket] Chat not found or could not be created');
-            return;
-          }
-
           // Create Message
           const newMessage = await Message.create({
             sender,
             receiver,
-            chat: chat._id,
+            chat: chatId,
             text,
             media,
             replyTo,
             status: this.onlineUsers.has(receiver) ? 'delivered' : 'sent',
           });
 
-          // Update Chat
-          chat.lastMessage = newMessage._id;
-          
-          // Update unread count for receiver
-          const currentCount = chat.unreadCount.get(receiver) || 0;
-          chat.unreadCount.set(receiver, currentCount + 1);
-          
-          await chat.save();
+          console.log(`[Socket] DB: Message created with ID ${newMessage._id}. Status: ${newMessage.status}`);
 
-          // Prepare message for emission
+          // Update Chat
+          const chat = await Chat.findByIdAndUpdate(chatId, {
+            lastMessage: newMessage._id,
+            $inc: { [`unreadCount.${receiver}`]: 1 }
+          }, { new: true });
+
+          if (!chat) {
+            console.error(`[Socket] ERROR: Chat ${chatId} not found during message update`);
+            throw new Error('Chat not found');
+          }
+
+          // Populate for emission
           const messageToEmit = await Message.findById(newMessage._id)
             .populate('sender', 'name profilePicture avatar')
             .populate('replyTo');
 
-          // Emit to receiver's personal room (for instant delivery anywhere)
-          console.log(`[Socket] Emitting receive_message to receiver: ${receiver}`);
-          this.io.to(receiver).emit('receive_message', messageToEmit);
+          // Emit to the chat room
+          console.log(`[Socket] EMIT: receive_message to room ${chatId}`);
+          this.io.to(chatId).emit('receive_message', messageToEmit);
           
-          // Emit back to sender with tempId for optimistic UI sync
-          console.log(`[Socket] Emitting message_sent to sender: ${sender}`);
-          this.io.to(sender).emit('message_sent', {
-            message: messageToEmit,
-            tempId: tempId
-          });
+          // If receiver is NOT in the chat room room but is online, send to their personal room
+          const receiverSocket = this.onlineUsers.get(receiver);
+          if (receiverSocket) {
+            const isReceiverInRoom = this.io.sockets.adapter.rooms.get(chatId)?.has(receiverSocket);
+            if (!isReceiverInRoom) {
+              console.log(`[Socket] EMIT: receive_message to receiver personal room ${receiver}`);
+              this.io.to(receiver).emit('receive_message', messageToEmit);
+            }
+          }
 
-          // Also emit to the specific chat room
-          console.log(`[Socket] Emitting receive_message to chat room: ${chat._id}`);
-          this.io.to(chat._id.toString()).emit('receive_message', messageToEmit);
-          
-          // Update chat list for both users
-          const updatedChat = await Chat.findById(chat._id)
+          // Emit chat update for list synchronization
+          const updatedChat = await Chat.findById(chatId)
             .populate('participants', 'name mobileNumber avatar onlineStatus lastSeen')
             .populate({
               path: 'lastMessage',
               populate: { path: 'sender', select: 'name' },
             });
 
+          console.log(`[Socket] EMIT: chat_update to sender ${sender} and receiver ${receiver}`);
           this.io.to(sender).emit(`chat_update_${sender}`, updatedChat);
           this.io.to(receiver).emit(`chat_update_${receiver}`, updatedChat);
 
+          // Acknowledge to sender
+          if (callback) {
+            callback({
+              status: 'ok',
+              message: messageToEmit,
+              tempId: tempId
+            });
+          }
+
         } catch (error) {
-          console.error('[Socket] Error in send_message:', error);
-          socket.emit('message_error', { error: 'Failed to send message', tempId });
+          console.error('[Socket] FATAL ERROR in send_message:', error);
+          if (callback) callback({ status: 'error', message: error.message });
         }
       });
 
       // 4. Typing indicators
       socket.on('typing', (data) => {
         const { chatId, receiverId } = data;
+        if (!chatId || !receiverId) return;
         this.io.to(receiverId).emit('typing', { chatId, senderId: socket.userId });
       });
 
       socket.on('stop_typing', (data) => {
         const { chatId, receiverId } = data;
+        if (!chatId || !receiverId) return;
         this.io.to(receiverId).emit('stop_typing', { chatId, senderId: socket.userId });
       });
 
@@ -161,46 +186,52 @@ class SocketManager {
         try {
           if (!chatId || !userId) return;
 
+          // Update messages in DB
           await Message.updateMany(
             { chat: chatId, receiver: userId, status: { $ne: 'seen' } },
             { status: 'seen' }
           );
 
+          // Reset unread count
           const chat = await Chat.findById(chatId);
           if (chat) {
             chat.unreadCount.set(userId, 0);
             await chat.save();
-          }
-
-          // Notify sender that messages were seen
-          const otherParticipant = chat.participants.find(p => p.toString() !== userId);
-          if (otherParticipant) {
-            this.io.to(otherParticipant.toString()).emit('messages_marked_seen', { chatId, userId });
+            
+            // Notify other participant(s)
+            chat.participants.forEach(p => {
+              if (p.toString() !== userId) {
+                this.io.to(p.toString()).emit('messages_marked_seen', { chatId, userId });
+              }
+            });
           }
         } catch (error) {
-          console.error('[Socket] Error in message_seen:', error);
+          console.error('[Socket] message_seen error:', error);
         }
       });
 
       // 6. Call signaling
       socket.on('call_user', async (data) => {
         const { callerId, receiverId, type, channelName, chatId } = data;
-        console.log(`[Socket] Call initiated: from ${callerId} to ${receiverId} (${type})`);
-        console.log(`[Socket] Channel: ${channelName}, Chat: ${chatId}`);
+        
+        if (!callerId || !receiverId || !channelName) {
+          console.error('[Socket] Call failed: Missing required data');
+          return;
+        }
 
-        // 1. Get caller and receiver details
+        console.log(`[Socket] CALL: From ${callerId} to ${receiverId} (${type}). Channel: ${channelName}`);
+
         const [caller, receiver] = await Promise.all([
           User.findById(callerId),
           User.findById(receiverId)
         ]);
 
         if (!caller || !receiver) {
-          console.error('[Socket] Call failed: Caller or Receiver not found in database');
+          console.error('[Socket] Call failed: User not found');
           return;
         }
 
-        // 2. Emit socket event for foreground users
-        console.log(`[Socket] Emitting incoming_call to receiver personal room: ${receiverId}`);
+        // Emit to receiver
         this.io.to(receiverId).emit('incoming_call', {
           callerId,
           callerName: caller.name,
@@ -210,45 +241,87 @@ class SocketManager {
           chatId,
         });
 
-        // 3. Create call record
+        // Store call record
         await Call.create({
           caller: callerId,
           receiver: receiverId,
           type,
           channelName,
-          status: 'ongoing',
-        }).catch(err => console.error('[Socket] Error creating call record:', err));
+          status: 'ringing',
+        }).catch(err => console.error('[Socket] Call record error:', err));
       });
 
-      socket.on('accept_call', (data) => {
+      socket.on('call_ringing', (data) => {
         const { callerId, channelName } = data;
-        console.log(`[Socket] Call accepted by receiver for caller ${callerId}`);
-        this.io.to(callerId).emit('call_accepted', { channelName });
+        console.log(`[Socket] CALL RINGING: Channel ${channelName} for caller ${callerId}`);
+        this.io.to(callerId).emit('call_ringing', { channelName });
       });
 
-      socket.on('reject_call', (data) => {
-        const { callerId } = data;
-        console.log(`[Socket] Call rejected by receiver for caller ${callerId}`);
-        this.io.to(callerId).emit('call_rejected');
+      socket.on('call_busy', (data) => {
+        const { callerId, channelName } = data;
+        console.log(`[Socket] CALL BUSY: Channel ${channelName} for caller ${callerId}`);
+        this.io.to(callerId).emit('call_busy', { channelName });
       });
 
-      socket.on('end_call', (data) => {
-        const { otherUserId } = data;
-        console.log(`[Socket] Call ended between users`);
-        this.io.to(otherUserId).emit('call_ended');
+      socket.on('accept_call', async (data) => {
+        const { callerId, channelName } = data;
+        const receiverId = socket.userId;
+        
+        console.log(`[Socket] CALL ACCEPTED: By ${receiverId} for caller ${callerId}`);
+        
+        // Notify caller
+        this.io.to(callerId).emit('call_accepted', { 
+          channelName,
+          receiverId 
+        });
+
+        // Update call record
+        await Call.findOneAndUpdate(
+          { channelName, status: 'ringing' },
+          { status: 'ongoing' }
+        ).catch(err => console.error('[Socket] Call update error:', err));
+      });
+
+      socket.on('reject_call', async (data) => {
+        const { callerId, channelName } = data;
+        console.log(`[Socket] CALL REJECTED: By ${socket.userId} for caller ${callerId}`);
+        
+        this.io.to(callerId).emit('call_rejected', { channelName });
+
+        // Update call record
+        await Call.findOneAndUpdate(
+          { channelName, status: 'ringing' },
+          { status: 'rejected' }
+        ).catch(err => console.error('[Socket] Call update error:', err));
+      });
+
+      socket.on('end_call', async (data) => {
+        const { otherUserId, channelName } = data;
+        console.log(`[Socket] CALL ENDED: Between ${socket.userId} and ${otherUserId}`);
+        
+        this.io.to(otherUserId).emit('call_ended', { channelName });
+
+        // Update call record
+        await Call.findOneAndUpdate(
+          { channelName, status: 'ongoing' },
+          { status: 'completed', endedAt: Date.now() }
+        ).catch(err => console.error('[Socket] Call update error:', err));
       });
 
       // 7. Disconnect
       socket.on('disconnect', async () => {
         if (socket.userId) {
+          console.log(`[Socket] User ${socket.userId} disconnected`);
           this.onlineUsers.delete(socket.userId);
+          
           await User.findByIdAndUpdate(socket.userId, { 
             onlineStatus: false,
             lastSeen: Date.now() 
           });
+
+          this.io.emit('online_status', { userId: socket.userId, status: false });
           this.io.emit('online_users', Array.from(this.onlineUsers.keys()));
         }
-        console.log('User disconnected:', socket.id);
       });
     });
   }
