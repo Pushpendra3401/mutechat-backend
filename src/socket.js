@@ -27,19 +27,24 @@ class SocketManager {
           return;
         }
         
-        // Cleanup old room if any
-        if (socket.userId && socket.userId !== userId) {
-          socket.leave(socket.userId);
-          this.onlineUsers.delete(socket.userId);
+        // ENFORCE SINGLE SOCKET PER USER
+        const existingSocketId = this.onlineUsers.get(userId);
+        if (existingSocketId && existingSocketId !== socket.id) {
+          console.log(`[Socket] Replacing stale socket ${existingSocketId} for user ${userId}`);
+          const existingSocket = this.io.sockets.sockets.get(existingSocketId);
+          if (existingSocket) {
+            existingSocket.emit('force_disconnect', { reason: 'Logged in from another device' });
+            existingSocket.disconnect(true);
+          }
         }
 
         socket.join(userId);
         this.onlineUsers.set(userId, socket.id);
         socket.userId = userId;
         
-        console.log(`[Socket] User ${userId} setup complete. Socket: ${socket.id}`);
+        console.log(`[Socket] USER_CONNECTED: ${userId} | Socket: ${socket.id}`);
         
-        socket.emit('connected');
+        socket.emit('connected', { socketId: socket.id });
         
         // Mark user as online
         User.findByIdAndUpdate(userId, { 
@@ -85,7 +90,7 @@ class SocketManager {
 
       // 3. Send Message (with Acknowledgement)
       socket.on('send_message', async (data, callback) => {
-        const { sender, receiver, text, media, replyTo, chatId, tempId } = data;
+        const { sender, receiver, text, media, replyTo, chatId, tempId, clientMessageId } = data;
 
         if (!sender || !receiver || !chatId) {
           console.error(`[Socket] ERROR: Missing data for message from ${socket.userId}. ChatId: ${chatId}`);
@@ -93,9 +98,20 @@ class SocketManager {
           return;
         }
 
-        console.log(`[Socket] MESSAGE: From ${sender} to ${receiver} in chat ${chatId}. Text: ${text?.substring(0, 20)}...`);
+        console.log(`[Socket] MESSAGE_RECEIVED: From ${sender} to ${receiver} in chat ${chatId} | clientMessageId: ${clientMessageId || tempId}`);
 
         try {
+          // Check for existing message with same clientMessageId to prevent duplicates
+          if (clientMessageId) {
+            const existing = await Message.findOne({ clientMessageId });
+            if (existing) {
+              console.log(`[Socket] DUPLICATE_PREVENTED: Message with clientMessageId ${clientMessageId} already exists`);
+              const populated = await Message.findById(existing._id).populate('sender', 'name profilePicture avatar').populate('replyTo');
+              if (callback) callback({ status: 'ok', message: populated, tempId: tempId });
+              return;
+            }
+          }
+
           // Create Message
           const newMessage = await Message.create({
             sender,
@@ -104,6 +120,7 @@ class SocketManager {
             text,
             media,
             replyTo,
+            clientMessageId: clientMessageId || tempId,
             status: this.onlineUsers.has(receiver) ? 'delivered' : 'sent',
           });
 
@@ -244,7 +261,7 @@ class SocketManager {
           console.log(`[CALL] Call record saved successfully: ${callRecord._id}`);
 
           // 2. Emit to receiver ONLY after record is saved
-          console.log(`[CALL] Emitting incoming_call to receiver: ${receiverId}`);
+          console.log(`[Socket] CALL_EMITTED: To receiver ${receiverId} | Channel: ${channelName}`);
           this.io.to(receiverId).emit('incoming_call', {
             callerId,
             callerName: caller.name,
