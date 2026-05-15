@@ -11,16 +11,18 @@ const ApiResponse = require('../utils/ApiResponse');
  * @access  Private
  */
 exports.getChats = asyncHandler(async (req, res) => {
+  console.log(`[Chat] Fetching chats for user: ${req.user._id}`);
   const chats = await Chat.find({
-    participants: { $in: [req.user.id] },
+    participants: { $in: [req.user._id] },
   })
-    .populate('participants', 'name mobileNumber profilePicture onlineStatus lastSeen')
+    .populate('participants', 'name mobileNumber avatar onlineStatus lastSeen')
     .populate({
       path: 'lastMessage',
       populate: { path: 'sender', select: 'name' },
     })
     .sort('-updatedAt');
 
+  console.log(`[Chat] Found ${chats.length} chats for user ${req.user._id}`);
   res.status(200).json(new ApiResponse(200, chats, 'Chats fetched successfully'));
 });
 
@@ -74,7 +76,7 @@ exports.getMessages = asyncHandler(async (req, res) => {
     .sort('-createdAt')
     .skip((page - 1) * limit)
     .limit(limit)
-    .populate('sender', 'name profilePicture avatar')
+    .populate('sender', 'name avatar')
     .populate('replyTo');
 
   res.status(200).json(new ApiResponse(200, {
