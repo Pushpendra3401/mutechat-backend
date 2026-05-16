@@ -66,22 +66,16 @@ const sendCallNotification = async (receiverToken, caller, callData) => {
       type: 'call',
       callerId: caller._id.toString(),
       callerName: caller.name,
-      callerAvatar: caller.avatar || '',
-      channelName: callData.channelName,
       chatId: callData.chatId || '',
-      click_action: 'FLUTTER_NOTIFICATION_CLICK',
-    },
-    notification: {
-      title: 'Incoming Call',
-      body: `${caller.name} is calling you...`,
+      channelName: callData.channelName,
+      callType: callData.type || 'video',
     },
     android: {
       priority: 'high',
-      ttl: 30000, // 30 seconds
       notification: {
-        channelId: 'mutechat_high_importance_channel',
-        priority: 'max',
-        fullScreenIntent: true,
+        channelId: 'calls',
+        sound: 'default',
+        clickAction: 'FLUTTER_NOTIFICATION_CLICK',
       },
     },
   };
@@ -113,21 +107,21 @@ const sendMessageNotification = async (receiverToken, sender, messageData) => {
 
   const message = {
     token: receiverToken,
-    data: {
-      type: 'chat',
-      chatId: messageData.chatId.toString(),
-      senderId: sender._id.toString(),
-      senderName: sender.name,
-      click_action: 'FLUTTER_NOTIFICATION_CLICK',
-    },
     notification: {
       title: sender.name,
       body: messageData.text || (messageData.media ? 'Sent a photo' : 'New message'),
     },
+    data: {
+      type: 'chat',
+      chatId: messageData.chatId.toString(),
+      senderId: sender._id.toString(),
+    },
     android: {
       priority: 'high',
       notification: {
-        channelId: 'mutechat_high_importance_channel',
+        channelId: 'messages',
+        sound: 'default',
+        clickAction: 'FLUTTER_NOTIFICATION_CLICK',
       },
     },
   };
@@ -159,19 +153,20 @@ const sendMissedCallNotification = async (receiverToken, caller) => {
 
   const message = {
     token: receiverToken,
-    data: {
-      type: 'missed_call',
-      senderId: caller._id.toString(),
-      click_action: 'FLUTTER_NOTIFICATION_CLICK',
-    },
     notification: {
       title: 'Missed Call',
       body: `You missed a call from ${caller.name}`,
     },
+    data: {
+      type: 'missed_call',
+      senderId: caller._id.toString(),
+    },
     android: {
       priority: 'high',
       notification: {
-        channelId: 'mutechat_high_importance_channel',
+        channelId: 'calls',
+        sound: 'default',
+        clickAction: 'FLUTTER_NOTIFICATION_CLICK',
       },
     },
   };
