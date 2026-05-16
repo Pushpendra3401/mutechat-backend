@@ -16,6 +16,6 @@ router.get('/profile/:id', getUserProfile);
 router.put('/profile', updateProfile);
 router.post('/avatar', upload.single('avatar'), updateAvatar);
 router.get('/search', searchUsers);
-router.patch('/fcm-token', updateFCMToken);
+router.post('/fcm-token', updateFCMToken);
 
 module.exports = router;

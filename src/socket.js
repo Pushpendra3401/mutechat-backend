@@ -3,6 +3,7 @@ const Message = require('./models/message.model');
 const Chat = require('./models/chat.model');
 const User = require('./models/user.model');
 const Call = require('./models/call.model');
+const { sendMessageNotification, sendCallNotification } = require('./services/notificationService');
 
 class SocketManager {
   constructor(server) {
@@ -61,13 +62,19 @@ class SocketManager {
           
           if (result.modifiedCount > 0) {
             console.log(`[Socket] Marked ${result.modifiedCount} messages as delivered for ${userId}`);
-            // Notify senders? Usually, WhatsApp does this. 
-            // For simplicity, we can let the next chat_update or a specific event handle it.
-            // Let's emit a global event or just rely on the next interaction.
-            // Actually, we should notify the senders.
-            const sentMessages = await Message.find({ receiver: userId, status: 'delivered' }).distinct('chat');
-            sentMessages.forEach(chatId => {
-               this.io.to(chatId.toString()).emit('messages_marked_delivered', { chatId, userId });
+            
+            // Find chats where messages were delivered to notify senders
+            const chatsWithDeliveredMessages = await Message.find({ 
+              receiver: userId, 
+              status: 'delivered' 
+            }).distinct('chat');
+
+            chatsWithDeliveredMessages.forEach(chatId => {
+              // Emit to the chat room so the sender(s) get the update
+              this.io.to(chatId.toString()).emit('messages_marked_delivered', { 
+                chatId: chatId.toString(), 
+                userId 
+              });
             });
           }
         }).catch(err => console.error('[Socket] Status update error:', err));
@@ -145,6 +152,14 @@ class SocketManager {
           // Emit to the chat room
           console.log(`[Socket] EMIT: receive_message to room ${chatId}`);
           this.io.to(chatId).emit('receive_message', messageToEmit);
+
+          // If delivered immediately, notify the sender specifically about delivery
+          if (newMessage.status === 'delivered') {
+            this.io.to(chatId).emit('messages_marked_delivered', { 
+              chatId, 
+              userId: receiver 
+            });
+          }
           
           // If receiver is NOT in the chat room room but is online, send to their personal room
           const receiverSocket = this.onlineUsers.get(receiver);
@@ -167,6 +182,27 @@ class SocketManager {
           console.log(`[Socket] EMIT: chat_update to sender ${sender} and receiver ${receiver}`);
           this.io.to(sender).emit(`chat_update_${sender}`, updatedChat);
           this.io.to(receiver).emit(`chat_update_${receiver}`, updatedChat);
+
+          // PUSH NOTIFICATION: Send if receiver is not online or not in the room
+          const isReceiverInRoom = receiverSocket ? this.io.sockets.adapter.rooms.get(chatId)?.has(receiverSocket) : false;
+          
+          if (!isReceiverInRoom) {
+            try {
+              const receiverUser = await User.findById(receiver).select('fcmToken');
+              const senderUser = await User.findById(sender).select('name');
+              
+              if (receiverUser && receiverUser.fcmToken) {
+                console.log(`[Socket] PUSH: Sending message notification to ${receiver}`);
+                await sendMessageNotification(receiverUser.fcmToken, senderUser, {
+                  chatId: chatId,
+                  text: text,
+                  media: media
+                });
+              }
+            } catch (err) {
+              console.error('[Socket] FCM ERROR in send_message:', err.message);
+            }
+          }
 
           // Acknowledge to sender
           if (callback) {
@@ -227,6 +263,26 @@ class SocketManager {
         }
       });
 
+      // 5.1 Message Delivered (Explicit acknowledgment from device)
+      socket.on('message_delivered', async (data) => {
+        const { chatId, userId, messageId } = data;
+        try {
+          if (!chatId || !userId) return;
+
+          const query = messageId ? { _id: messageId } : { chat: chatId, receiver: userId, status: 'sent' };
+          
+          await Message.updateMany(
+            query,
+            { status: 'delivered' }
+          );
+
+          this.io.to(chatId).emit('messages_marked_delivered', { chatId, userId });
+          console.log(`[Socket] Explicit delivery ack for user ${userId} in chat ${chatId}`);
+        } catch (error) {
+          console.error('[Socket] message_delivered error:', error);
+        }
+      });
+
       // 6. Call signaling
       socket.on('call_user', async (data) => {
         const { callerId, receiverId, type, channelName, chatId } = data;
@@ -270,6 +326,15 @@ class SocketManager {
             channelName,
             chatId,
           });
+
+          // PUSH NOTIFICATION: Send call push notification
+          if (receiver.fcmToken) {
+            console.log(`[Socket] PUSH: Sending call notification to ${receiverId}`);
+            await sendCallNotification(receiver.fcmToken, caller, {
+              channelName,
+              chatId,
+            });
+          }
 
         } catch (error) {
           console.error('[CALL] FATAL ERROR in call_user:', error.message);

@@ -10,13 +10,37 @@ cloudinary.config({
 
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
-  params: {
-    folder: 'mutechat/avatars',
-    allowed_formats: ['jpg', 'png', 'jpeg'],
-    transformation: [{ width: 500, height: 500, crop: 'limit' }],
+  params: async (req, file) => {
+    let folder = 'mutechat/others';
+    let resource_type = 'auto';
+
+    if (file.mimetype.startsWith('image/')) {
+      folder = 'mutechat/images';
+      resource_type = 'image';
+    } else if (file.mimetype.startsWith('video/')) {
+      folder = 'mutechat/videos';
+      resource_type = 'video';
+    } else if (file.mimetype.startsWith('audio/')) {
+      folder = 'mutechat/audio';
+      resource_type = 'video'; // Cloudinary uses 'video' for audio files
+    } else {
+      folder = 'mutechat/files';
+      resource_type = 'raw';
+    }
+
+    return {
+      folder: folder,
+      resource_type: resource_type,
+      public_id: `${Date.now()}-${file.originalname.split('.')[0]}`,
+    };
   },
 });
 
-const upload = multer({ storage: storage });
+const upload = multer({ 
+  storage: storage,
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50MB max overall
+  }
+});
 
 module.exports = upload;

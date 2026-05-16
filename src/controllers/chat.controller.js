@@ -99,14 +99,18 @@ exports.uploadMedia = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'Please upload a file');
   }
 
+  let type = 'file';
+  if (req.file.mimetype.startsWith('image/')) type = 'image';
+  else if (req.file.mimetype.startsWith('video/')) type = 'video';
+  else if (req.file.mimetype.startsWith('audio/')) type = 'audio';
+
   const media = {
     url: req.file.path,
-    public_id: req.file.filename,
-    type: req.file.mimetype.split('/')[0],
+    publicId: req.file.filename,
+    type: type,
+    fileName: req.file.originalname,
+    size: req.file.size,
   };
-
-  // Adjust audio type for Cloudinary
-  if (req.file.mimetype.startsWith('audio')) media.type = 'audio';
 
   res.status(200).json(new ApiResponse(200, media, 'Media uploaded successfully'));
 });

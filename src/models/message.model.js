@@ -23,15 +23,19 @@ const messageSchema = new mongoose.Schema(
     },
     media: {
       url: String,
-      public_id: String,
+      publicId: String,
       type: {
         type: String,
         enum: ['image', 'audio', 'video', 'file'],
       },
+      fileName: String,
+      size: Number,
+      duration: Number,
+      thumbnail: String,
     },
     status: {
       type: String,
-      enum: ['sent', 'delivered', 'seen'],
+      enum: ['sending', 'sent', 'delivered', 'seen', 'failed'],
       default: 'sent',
     },
     replyTo: {
