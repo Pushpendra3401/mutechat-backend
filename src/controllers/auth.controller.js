@@ -6,6 +6,23 @@ const twilioService = require('../services/twilioService');
 const jwtService = require('../services/jwtService');
 
 /**
+ * Normalizes phone number to +91XXXXXXXXXX
+ * @param {string} phone 
+ * @returns {string}
+ */
+const normalizePhoneNumber = (phone) => {
+  if (!phone) return phone;
+  let digits = phone.replace(/\D/g, '');
+  if (digits.length === 10) {
+    return `+91${digits}`;
+  }
+  if (digits.length === 12 && digits.startsWith('91')) {
+    return `+${digits}`;
+  }
+  return phone; // Should be caught by validator but fallback just in case
+};
+
+/**
  * @desc    Register a new user (Legacy/Email flow - DEPRECATED)
  * @route   POST /auth/register
  * @access  Public
@@ -29,10 +46,12 @@ const loginUser = asyncHandler(async (req, res) => {
  * @access  Public
  */
 const sendOTP = asyncHandler(async (req, res) => {
-  const { mobileNumber } = req.body;
+  let { mobileNumber } = req.body;
   if (!mobileNumber) {
     throw new ApiError(400, 'Mobile number is required');
   }
+
+  mobileNumber = normalizePhoneNumber(mobileNumber);
 
   const otpSent = await twilioService.sendOTP(mobileNumber);
   if (!otpSent) {
@@ -48,24 +67,32 @@ const sendOTP = asyncHandler(async (req, res) => {
  * @access  Public
  */
 const verifyOtp = asyncHandler(async (req, res) => {
-  const { mobileNumber, otp, name } = req.body;
+  let { mobileNumber, otp, name } = req.body;
 
-  console.log('[Auth] Verify OTP request:', { mobileNumber, otp, name });
+  console.log('[Auth] Login/signup request received:', { mobileNumber, otp, name });
 
   if (!mobileNumber || !otp) {
+    console.error('[Auth] Missing mobileNumber or OTP');
     throw new ApiError(400, 'Mobile number and OTP are required');
   }
+
+  mobileNumber = normalizePhoneNumber(mobileNumber);
+  console.log('[Auth] Normalized phone:', mobileNumber);
 
   // 1. Verify OTP with Twilio
   const isVerified = await twilioService.verifyOTP(mobileNumber, otp);
   if (!isVerified) {
+    console.error('[Auth] OTP verification failed for:', mobileNumber);
     throw new ApiError(400, 'Invalid or expired OTP');
   }
+
+  console.log('[Auth] OTP verify success for:', mobileNumber);
 
   // 2. Find or create user by mobile number
   let user = await User.findOne({ mobileNumber });
 
   if (!user) {
+    console.log('[Auth] Existing user NOT found. Attempting signup...');
     if (!name) {
       console.error('[Auth] Registration failed: Name missing for mobile', mobileNumber);
       throw new ApiError(400, 'Name is required for new registration via OTP');
@@ -80,13 +107,15 @@ const verifyOtp = asyncHandler(async (req, res) => {
     console.log('[Auth] New user created:', user._id);
   } else {
     // Existing user login
+    console.log('[Auth] Existing user found:', user.name, '(', user._id, ')');
     user.onlineStatus = true;
     user.lastSeen = Date.now();
     await user.save();
-    console.log('[Auth] Existing user logged in:', user._id);
+    console.log('[Auth] Existing user logged in successfully');
   }
 
   const token = user.getSignedJwtToken();
+  console.log('[Auth] JWT generated for user:', user._id);
 
   res.status(200).json(
     new ApiResponse(200, {

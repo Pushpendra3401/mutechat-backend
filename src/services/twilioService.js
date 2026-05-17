@@ -45,19 +45,22 @@ exports.validateTwilioConfig = async () => {
  * @param {string} mobileNumber 
  */
 exports.sendOTP = async (mobileNumber) => {
-  console.log('[Twilio] Sending OTP to:', mobileNumber);
+  console.log('[Twilio] Attempting to send OTP to:', mobileNumber);
+  try {
+    const response = await client.verify.v2
+      .services(process.env.TWILIO_SERVICE_SID)
+      .verifications
+      .create({
+        to: mobileNumber,
+        channel: 'sms'
+      });
 
-  const response = await client.verify.v2
-    .services(process.env.TWILIO_SERVICE_SID)
-    .verifications
-    .create({
-      to: mobileNumber,
-      channel: 'sms'
-    });
-
-  console.log('[Twilio] Send response:', response.status);
-
-  return response;
+    console.log('[Twilio] Send response status:', response.status, 'SID:', response.sid);
+    return response;
+  } catch (error) {
+    console.error('[Twilio] Error sending OTP:', error.message);
+    throw error;
+  }
 };
 
 /**
@@ -67,12 +70,7 @@ exports.sendOTP = async (mobileNumber) => {
  */
 exports.verifyOTP = async (mobileNumber, otp) => {
   try {
-    console.log(
-      '[Twilio] Verifying OTP:',
-      otp,
-      'for',
-      mobileNumber
-    );
+    console.log('[Twilio] Verifying OTP:', otp, 'for', mobileNumber);
 
     const verificationCheck =
       await client.verify.v2
@@ -83,19 +81,11 @@ exports.verifyOTP = async (mobileNumber, otp) => {
           code: otp
         });
 
-    console.log(
-      '[Twilio] Verification result:',
-      verificationCheck.status
-    );
-
+    console.log('[Twilio] Verification check result:', verificationCheck.status);
     return verificationCheck.status === 'approved';
 
   } catch (error) {
-    console.error(
-      '[Twilio Verify Error]',
-      error.message
-    );
-
+    console.error('[Twilio] Verification error for', mobileNumber, ':', error.message);
     throw error;
   }
 };

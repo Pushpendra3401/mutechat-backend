@@ -69,8 +69,20 @@ const userSchema = new mongoose.Schema(
 
 // Encrypt password using bcrypt
 userSchema.pre('save', async function (next) {
-  if (!this.isModified('password')) {
-    next();
+  // Normalize mobile number
+  if (this.isModified('mobileNumber')) {
+    let digits = this.mobileNumber.replace(/\D/g, '');
+    if (digits.length === 10) {
+      this.mobileNumber = `+91${digits}`;
+    } else if (digits.length === 12 && digits.startsWith('91')) {
+      this.mobileNumber = `+${digits}`;
+    } else if (!this.mobileNumber.startsWith('+') && digits.length > 0) {
+      this.mobileNumber = `+${digits}`;
+    }
+  }
+
+  if (!this.isModified('password') || !this.password) {
+    return next();
   }
   const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password, salt);

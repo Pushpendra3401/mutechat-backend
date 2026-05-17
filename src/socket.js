@@ -219,19 +219,6 @@ class SocketManager {
         }
       });
 
-      // 4. Typing indicators
-      socket.on('typing', (data) => {
-        const { chatId, receiverId } = data;
-        if (!chatId || !receiverId) return;
-        this.io.to(receiverId).emit('typing', { chatId, senderId: socket.userId });
-      });
-
-      socket.on('stop_typing', (data) => {
-        const { chatId, receiverId } = data;
-        if (!chatId || !receiverId) return;
-        this.io.to(receiverId).emit('stop_typing', { chatId, senderId: socket.userId });
-      });
-
       // 5. Message Seen
       socket.on('message_seen', async (data) => {
         const { chatId, userId } = data; 
@@ -260,6 +247,27 @@ class SocketManager {
           }
         } catch (error) {
           console.error('[Socket] message_seen error:', error);
+        }
+      });
+
+      // 5.2 Typing status with room broadcast
+      socket.on('typing', (data) => {
+        const { chatId, receiverId } = data;
+        if (!chatId) return;
+        // Notify both specific receiver and the chat room
+        socket.to(chatId).emit('typing', { chatId, senderId: socket.userId });
+        if (receiverId) {
+          this.io.to(receiverId).emit('typing', { chatId, senderId: socket.userId });
+        }
+      });
+
+      socket.on('stop_typing', (data) => {
+        const { chatId, receiverId } = data;
+        if (!chatId) return;
+        // Notify both specific receiver and the chat room
+        socket.to(chatId).emit('stop_typing', { chatId, senderId: socket.userId });
+        if (receiverId) {
+          this.io.to(receiverId).emit('stop_typing', { chatId, senderId: socket.userId });
         }
       });
 
@@ -377,23 +385,32 @@ class SocketManager {
         const { callerId, channelName } = data;
         const receiverId = socket.userId;
         
-        console.log(`[CALL] ACCEPTED: By ${receiverId} for caller ${callerId}`);
-        
+        console.log(`[CALL] ACCEPTED: Channel ${channelName} by ${receiverId}`);
+
         try {
-          // Update call record to accepted
           await Call.findOneAndUpdate(
-            { channelName, status: { $in: ['initiated', 'ringing'] } },
+            { channelName },
             { status: 'accepted', startTime: Date.now() }
           );
-
-          // Notify caller
-          this.io.to(callerId).emit('call_accepted', { 
-            channelName,
-            receiverId 
-          });
+          this.io.to(callerId).emit('call_accepted', { channelName });
         } catch (error) {
           console.error('[CALL] Accept update error:', error.message);
         }
+      });
+
+      // 6.1 Call Reactions
+      socket.on('call_reaction', (data) => {
+        const { channelName, emoji, senderId } = data;
+        console.log(`[CALL] REACTION: ${emoji} in ${channelName} from ${senderId}`);
+        // Broadcast to everyone in the call room except sender
+        socket.to(channelName).emit('call_reaction', { emoji, senderId });
+      });
+
+      // 6.2 Call Captions
+      socket.on('call_caption', (data) => {
+        const { channelName, text, senderId, isFinal } = data;
+        console.log(`[CALL] CAPTION: ${text} in ${channelName} from ${senderId}`);
+        socket.to(channelName).emit('call_caption', { text, senderId, isFinal });
       });
 
       socket.on('reject_call', async (data) => {

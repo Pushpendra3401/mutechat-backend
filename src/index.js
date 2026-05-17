@@ -45,6 +45,53 @@ const connectDB = async (retryCount = 5) => {
   }
 };
 
+const migrateUsers = async () => {
+  const User = require('./models/user.model');
+  try {
+    const users = await User.find({});
+    console.log(`[Migration] Checking ${users.length} users for phone normalization...`);
+    
+    let migratedCount = 0;
+    for (const user of users) {
+      const original = user.mobileNumber;
+      if (!original) continue;
+
+      let digits = original.replace(/\D/g, '');
+      let normalized = original;
+      
+      if (digits.length === 10) {
+        normalized = `+91${digits}`;
+      } else if (digits.length === 12 && digits.startsWith('91')) {
+        normalized = `+${digits}`;
+      } else if (!original.startsWith('+') && digits.length > 0) {
+        normalized = `+${digits}`;
+      }
+
+      if (normalized !== original) {
+        // Check if another user already has this normalized number
+        const existingUser = await User.findOne({ mobileNumber: normalized, _id: { $ne: user._id } });
+        if (existingUser) {
+          console.warn(`[Migration] Conflict found for ${original} -> ${normalized}. Skipping to avoid duplicates.`);
+          continue;
+        }
+
+        user.mobileNumber = normalized;
+        await user.save();
+        migratedCount++;
+        console.log(`[Migration] Migrated: ${original} -> ${normalized}`);
+      }
+    }
+    
+    if (migratedCount > 0) {
+      console.log(`[Migration] Successfully normalized ${migratedCount} users.`);
+    } else {
+      console.log(`[Migration] All users already have normalized phone numbers.`);
+    }
+  } catch (error) {
+    console.error(`[Migration] Error during user migration: ${error.message}`);
+  }
+};
+
 // Start Server
 const startServer = async () => {
   // 0. Graceful Shutdown
@@ -61,6 +108,9 @@ const startServer = async () => {
 
   // 1. Connect to Database
   await connectDB();
+
+  // 1.5 Run Migration
+  await migrateUsers();
 
   // 2. Validate Twilio Configuration
   try {

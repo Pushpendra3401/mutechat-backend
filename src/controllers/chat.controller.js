@@ -14,6 +14,7 @@ exports.getChats = asyncHandler(async (req, res) => {
   console.log(`[Chat] Fetching chats for user: ${req.user._id}`);
   const chats = await Chat.find({
     participants: { $in: [req.user._id] },
+    lastMessage: { $ne: null } // ONLY show chats with at least one message
   })
     .populate('participants', 'name mobileNumber avatar onlineStatus lastSeen')
     .populate({
@@ -22,7 +23,7 @@ exports.getChats = asyncHandler(async (req, res) => {
     })
     .sort('-updatedAt');
 
-  console.log(`[Chat] Found ${chats.length} chats for user ${req.user._id}`);
+  console.log(`[Chat] Found ${chats.length} active chats for user ${req.user._id}`);
   res.status(200).json(new ApiResponse(200, chats, 'Chats fetched successfully'));
 });
 
@@ -80,7 +81,7 @@ exports.getMessages = asyncHandler(async (req, res) => {
     .populate('replyTo');
 
   res.status(200).json(new ApiResponse(200, {
-    messages: messages.reverse(),
+    messages: messages, // Removed .reverse() because frontend uses reverse: true
     pagination: {
       total,
       page,
