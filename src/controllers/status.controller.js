@@ -1,5 +1,5 @@
 const Status = require('../models/status.model');
-const asyncHandler = require('../middlewares/asyncHandler');
+const asyncHandler = require('../utils/asyncHandler');
 const ApiResponse = require('../utils/ApiResponse');
 const ApiError = require('../utils/ApiError');
 const User = require('../models/user.model');
