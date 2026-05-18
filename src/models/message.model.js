@@ -53,4 +53,9 @@ const messageSchema = new mongoose.Schema(
   }
 );
 
+// Performance Indexes for Scalability
+messageSchema.index({ chat: 1, createdAt: -1 }); // Faster history loading
+messageSchema.index({ receiver: 1, status: 1 }); // Faster delivered/seen updates
+messageSchema.index({ sender: 1, createdAt: -1 }); // Faster sender history
+
 module.exports = mongoose.model('Message', messageSchema);

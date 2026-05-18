@@ -8,6 +8,7 @@ router.use(protect);
 
 router.get('/', chatController.getChats);
 router.post('/', chatController.createOrGetChat);
+router.post('/group', chatController.createGroupChat);
 router.get('/search', chatController.searchUsers);
 router.get('/:chatId/messages', chatController.getMessages);
 router.post('/upload', upload.single('media'), chatController.uploadMedia);

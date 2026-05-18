@@ -63,6 +63,34 @@ exports.createOrGetChat = asyncHandler(async (req, res) => {
 });
 
 /**
+ * @desc    Create a group chat
+ * @route   POST /api/v1/chat/group
+ * @access  Private
+ */
+exports.createGroupChat = asyncHandler(async (req, res) => {
+  const { name, participants } = req.body;
+  const adminId = req.user._id;
+
+  if (!name || !participants || participants.length === 0) {
+    throw new ApiError(400, 'Name and participants are required');
+  }
+
+  // Include admin in participants if not already there
+  const allParticipants = [...new Set([...participants, adminId.toString()])];
+
+  const chat = await Chat.create({
+    name,
+    isGroup: true,
+    participants: allParticipants,
+    admins: [adminId],
+  });
+
+  const fullChat = await Chat.findById(chat._id).populate('participants', 'name avatar');
+
+  res.status(201).json(new ApiResponse(201, fullChat, 'Group chat created successfully'));
+});
+
+/**
  * @desc    Get messages for a specific chat
  * @route   GET /api/v1/chat/:chatId/messages
  * @access  Private

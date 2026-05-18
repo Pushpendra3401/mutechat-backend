@@ -98,6 +98,6 @@ exports.deleteStatus = asyncHandler(async (req, res) => {
     throw new ApiError(403, 'Not authorized to delete this status');
   }
 
-  await status.remove();
+  await Status.findByIdAndDelete(req.params.statusId);
   res.status(200).json(new ApiResponse(200, null, 'Status deleted successfully'));
 });

@@ -2,6 +2,8 @@ const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
 const User = require('../models/user.model');
+const Chat = require('../models/chat.model');
+const Message = require('../models/message.model');
 const cloudinary = require('cloudinary').v2;
 
 /**
@@ -98,4 +100,20 @@ exports.updateFCMToken = asyncHandler(async (req, res) => {
   await User.findByIdAndUpdate(req.user.id, { fcmToken });
 
   res.status(200).json(new ApiResponse(200, null, 'FCM Token updated successfully'));
+});
+
+/**
+ * @desc    Delete user account and all associated data
+ * @route   DELETE /api/v1/users/account
+ * @access  Private
+ */
+exports.deleteAccount = asyncHandler(async (req, res) => {
+  const userId = req.user._id;
+
+  // In production, you would also delete Cloudinary assets, FCM tokens, etc.
+  await Message.deleteMany({ $or: [{ sender: userId }, { receiver: userId }] });
+  await Chat.deleteMany({ participants: { $in: [userId] } });
+  await User.findByIdAndDelete(userId);
+
+  res.status(200).json(new ApiResponse(200, null, 'Account and data deleted successfully'));
 });

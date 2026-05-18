@@ -12,6 +12,8 @@ class SocketManager {
         origin: '*',
         methods: ['GET', 'POST'],
       },
+      // Horizontal Scaling Support (Production)
+      // adapter: require('socket.io-redis')({ host: process.env.REDIS_HOST, port: 6379 })
     });
 
     this.onlineUsers = new Map(); // userId -> socketId
@@ -441,6 +443,13 @@ class SocketManager {
         } catch (error) {
           console.error('[CALL] End update error:', error.message);
         }
+      });
+
+      // 6.3 Status signaling
+      socket.on('status_update', (data) => {
+        // Broadcast new status to all online users or specifically to contacts
+        // For simplicity in this MVP, broadcast to all
+        socket.broadcast.emit('status_update', data);
       });
 
       // 7. Disconnect

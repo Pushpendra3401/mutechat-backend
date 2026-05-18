@@ -9,6 +9,8 @@ const authRoutes = require('./routes/auth.routes');
 const userRoutes = require('./routes/user.routes');
 const chatRoutes = require('./routes/chat.routes');
 const callRoutes = require('./routes/call.routes');
+const statusRoutes = require('./routes/status.routes');
+const contactRoutes = require('./routes/contact.routes');
 const compression = require('compression');
 const ApiError = require('./utils/ApiError');
 
@@ -50,6 +52,16 @@ const limiter = rateLimit({
 });
 app.use('/auth', limiter); // Apply specifically to auth routes for protection
 
+const apiLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 60, // 60 requests per minute
+  message: {
+    success: false,
+    message: 'API rate limit exceeded'
+  }
+});
+app.use('/api', apiLimiter);
+
 // 4. Healthcheck Route
 app.get('/', (req, res) => {
   res.status(200).json({
@@ -69,6 +81,8 @@ app.use('/auth', authRoutes);
 app.use('/users', userRoutes);
 app.use('/chat', chatRoutes);
 app.use('/call', callRoutes);
+app.use('/status', statusRoutes);
+app.use('/contact', contactRoutes);
 
 // 5. 404 Handler
 app.all('*', (req, res, next) => {
