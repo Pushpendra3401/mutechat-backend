@@ -293,16 +293,45 @@ class SocketManager {
         }
       });
 
-      // 6. Call signaling
-      socket.on('call_user', async (data) => {
-        const { callerId, receiverId, type, channelName, chatId } = data;
+      // 6. Call signaling - FIXED: Changed from 'call_user' to 'initiate_call' to match frontend
+      socket.on('initiate_call', async (data) => {
+        // TASK 3 - SOCKET EMIT: Backend receives outgoing call event
+        console.log('[Socket] Incoming call event received on backend');
+        console.log('[Call] Raw data received:', JSON.stringify(data));
+        
+        // Parse data - frontend sends CallModel.toJson() with caller/receiver objects
+        let callerId, receiverId, type, channelName, chatId;
+        
+        if (data.caller && typeof data.caller === 'object') {
+          // Frontend sends full CallModel with user objects
+          callerId = data.caller.id || data.caller._id;
+          receiverId = data.receiver.id || data.receiver._id;
+          type = data.type;
+          channelName = data.channelId;
+          chatId = data.chatId;
+          console.log('[Call] Parsed from CallModel structure');
+        } else {
+          // Fallback for backward compatibility
+          callerId = data.callerId;
+          receiverId = data.receiverId;
+          type = data.type;
+          channelName = data.channelName;
+          chatId = data.chatId;
+          console.log('[Call] Parsed from flat structure');
+        }
+        
+        console.log('[Call] Caller ID:', callerId);
+        console.log('[Call] Receiver ID:', receiverId);
+        console.log('[Call] Channel ID:', channelName);
+        console.log('[Call] Call Type:', type);
         
         if (!callerId || !receiverId || !channelName) {
           console.error('[CALL] Creation failed: Missing required data');
+          console.error('[CALL] callerId:', callerId, 'receiverId:', receiverId, 'channelName:', channelName);
           return;
         }
 
-        console.log(`[CALL] Initiating: From ${callerId} to ${receiverId} (${type}). Channel: ${channelName}`);
+        console.log(`[CALL] Call event received: From ${callerId} to ${receiverId} (${type}). Channel: ${channelName}`);
 
         try {
           const [caller, receiver] = await Promise.all([
@@ -311,7 +340,8 @@ class SocketManager {
           ]);
 
           if (!caller || !receiver) {
-            console.error('[CALL] User not found');
+            console.error('[CALL] User not found - caller:', !!caller, 'receiver:', !!receiver);
+            this.io.to(callerId).emit('call_error', { message: 'Receiver not found' });
             return;
           }
 
@@ -326,8 +356,11 @@ class SocketManager {
           });
           console.log(`[CALL] Call record saved successfully: ${callRecord._id}`);
 
-          // 2. Emit to receiver ONLY after record is saved
-          console.log(`[Socket] CALL_EMITTED: To receiver ${receiverId} | Channel: ${channelName}`);
+          // TASK 5 - RECEIVER DELIVERY: Verify backend emits to receiver
+          // TASK 4 - SOCKET EMIT: Emitting incoming call to receiver
+          console.log(`[Socket] Emitting incoming call to receiver`);
+          console.log('[Socket] Receiver Socket ID:', receiverId);
+          
           this.io.to(receiverId).emit('incoming_call', {
             callerId,
             callerName: caller.name,
@@ -336,6 +369,8 @@ class SocketManager {
             channelName,
             chatId,
           });
+          
+          console.log(`[Socket] Incoming call event emitted to receiver ${receiverId} | Channel: ${channelName}`);
 
           // PUSH NOTIFICATION: Send call push notification
           if (receiver.fcmToken) {
@@ -344,10 +379,13 @@ class SocketManager {
               channelName,
               chatId,
             });
+          } else {
+            console.log(`[Socket] PUSH: No FCM token for receiver ${receiverId}`);
           }
 
         } catch (error) {
-          console.error('[CALL] FATAL ERROR in call_user:', error.message);
+          console.error('[CALL] FATAL ERROR in initiate_call:', error.message);
+          console.error('[CALL] Stack:', error.stack);
           // If creation fails, notify caller
           this.io.to(callerId).emit('call_error', { message: 'Failed to initiate call' });
         }
@@ -387,14 +425,20 @@ class SocketManager {
         const { callerId, channelName } = data;
         const receiverId = socket.userId;
         
-        console.log(`[CALL] ACCEPTED: Channel ${channelName} by ${receiverId}`);
+        console.log(`[Call] Call accepted`);
+        console.log(`[Call] Channel: ${channelName}`);
+        console.log(`[Call] Accepted by receiver: ${receiverId}`);
+        console.log(`[Call] For caller: ${callerId}`);
 
         try {
           await Call.findOneAndUpdate(
             { channelName },
             { status: 'accepted', startTime: Date.now() }
           );
+          console.log(`[Call] Call record updated to accepted status`);
+          
           this.io.to(callerId).emit('call_accepted', { channelName });
+          console.log(`[Socket] Call accepted event emitted to caller ${callerId}`);
         } catch (error) {
           console.error('[CALL] Accept update error:', error.message);
         }
@@ -417,14 +461,20 @@ class SocketManager {
 
       socket.on('reject_call', async (data) => {
         const { callerId, channelName } = data;
-        console.log(`[CALL] REJECTED: By ${socket.userId} for caller ${callerId}`);
+        console.log(`[Call] Call rejected`);
+        console.log(`[Call] Channel: ${channelName}`);
+        console.log(`[Call] Rejected by receiver: ${socket.userId}`);
+        console.log(`[Call] For caller: ${callerId}`);
         
         try {
           await Call.findOneAndUpdate(
             { channelName, status: { $in: ['initiated', 'ringing'] } },
             { status: 'rejected' }
           );
+          console.log(`[Call] Call record updated to rejected status`);
+          
           this.io.to(callerId).emit('call_rejected', { channelName });
+          console.log(`[Socket] Call rejected event emitted to caller ${callerId}`);
         } catch (error) {
           console.error('[CALL] Reject update error:', error.message);
         }
@@ -432,14 +482,20 @@ class SocketManager {
 
       socket.on('end_call', async (data) => {
         const { otherUserId, channelName } = data;
-        console.log(`[CALL] ENDED: Between ${socket.userId} and ${otherUserId}`);
+        console.log(`[Call] Call ended`);
+        console.log(`[Call] Channel: ${channelName}`);
+        console.log(`[Call] Ended by: ${socket.userId}`);
+        console.log(`[Call] Notifying other user: ${otherUserId}`);
         
         try {
           await Call.findOneAndUpdate(
             { channelName, status: { $ne: 'ended' } },
             { status: 'ended', endTime: Date.now() }
           );
+          console.log(`[Call] Call record updated to ended status`);
+          
           this.io.to(otherUserId).emit('call_ended', { channelName });
+          console.log(`[Socket] Call ended event emitted to user ${otherUserId}`);
         } catch (error) {
           console.error('[CALL] End update error:', error.message);
         }
