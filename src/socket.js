@@ -73,6 +73,7 @@ class SocketManager {
       console.log(`[Socket] USER_READY: ${userId} | Socket: ${socket.id}`);
       
       socket.emit('connected', { socketId: socket.id });
+      socket.emit('setup_complete', { userId });
       
       // Mark user as online
       User.findByIdAndUpdate(userId, { 
@@ -341,9 +342,8 @@ class SocketManager {
           console.error(`[Socket] SECURITY ALERT: User ${socket.userId} tried to initiate call as ${currentCallerId}`);
           return;
         }
-        // TASK 3 - SOCKET EMIT: Backend receives outgoing call event
-        console.log('[Socket] Incoming call event received on backend');
-        console.log('[Call] Raw data received:', JSON.stringify(data));
+        
+        console.log(`[Call] initiate_call: From ${currentCallerId} for channel ${data.channelId || data.channelName}`);
         
         // Parse data - frontend sends CallModel.toJson() with caller/receiver objects
         let callerId, receiverId, type, channelName, chatId;
@@ -355,7 +355,6 @@ class SocketManager {
           type = data.type;
           channelName = data.channelId;
           chatId = data.chatId;
-          console.log('[Call] Parsed from CallModel structure');
         } else {
           // Fallback for backward compatibility
           callerId = data.callerId;
@@ -363,21 +362,12 @@ class SocketManager {
           type = data.type;
           channelName = data.channelName;
           chatId = data.chatId;
-          console.log('[Call] Parsed from flat structure');
         }
-        
-        console.log('[Call] Caller ID:', callerId);
-        console.log('[Call] Receiver ID:', receiverId);
-        console.log('[Call] Channel ID:', channelName);
-        console.log('[Call] Call Type:', type);
         
         if (!callerId || !receiverId || !channelName) {
           console.error('[CALL] Creation failed: Missing required data');
-          console.error('[CALL] callerId:', callerId, 'receiverId:', receiverId, 'channelName:', channelName);
           return;
         }
-
-        console.log(`[CALL] Call event received: From ${callerId} to ${receiverId} (${type}). Channel: ${channelName}`);
 
         try {
           const [caller, receiver] = await Promise.all([
@@ -386,27 +376,21 @@ class SocketManager {
           ]);
 
           if (!caller || !receiver) {
-            console.error('[CALL] User not found - caller:', !!caller, 'receiver:', !!receiver);
+            console.error('[CALL] User not found');
             this.io.to(callerId).emit('call_error', { message: 'Receiver not found' });
             return;
           }
 
           // 1. Create and Save Call Record FIRST
-          console.log('[CALL] Creating call record in DB...');
           const callRecord = await Call.create({
             caller: callerId,
             receiver: receiverId,
             type,
             channelName,
-            status: 'initiated', // Standardized state
+            status: 'initiated',
           });
-          console.log(`[CALL] Call record saved successfully: ${callRecord._id}`);
 
-          // TASK 5 - RECEIVER DELIVERY: Verify backend emits to receiver
-          // TASK 4 - SOCKET EMIT: Emitting incoming call to receiver
-          console.log(`[Socket] Emitting incoming call to receiver`);
-          console.log('[Socket] Receiver Socket ID:', receiverId);
-          
+          // 2. EMIT TO RECEIVER
           this.io.to(receiverId).emit('incoming_call', {
             callerId,
             callerName: caller.name,
@@ -416,23 +400,19 @@ class SocketManager {
             chatId,
           });
           
-          console.log(`[Socket] Incoming call event emitted to receiver ${receiverId} | Channel: ${channelName}`);
+          console.log(`[Socket] Incoming call event emitted to receiver ${receiverId}`);
 
-          // PUSH NOTIFICATION: Send call push notification
+          // 3. PUSH NOTIFICATION (FCM)
           if (receiver.fcmToken) {
-            console.log(`[Socket] PUSH: Sending call notification to ${receiverId}`);
             await sendCallNotification(receiver.fcmToken, caller, {
               channelName,
               chatId,
+              type, // video/audio
             });
-          } else {
-            console.log(`[Socket] PUSH: No FCM token for receiver ${receiverId}`);
           }
 
         } catch (error) {
           console.error('[CALL] FATAL ERROR in initiate_call:', error.message);
-          console.error('[CALL] Stack:', error.stack);
-          // If creation fails, notify caller
           this.io.to(callerId).emit('call_error', { message: 'Failed to initiate call' });
         }
       });

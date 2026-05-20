@@ -64,8 +64,9 @@ const sendCallNotification = async (receiverToken, caller, callData) => {
     token: receiverToken,
     data: {
       type: 'call',
-      callerId: caller._id.toString(),
+      callerId: caller._id ? caller._id.toString() : caller.id.toString(),
       callerName: caller.name,
+      callerAvatar: caller.avatar || '',
       chatId: callData.chatId || '',
       channelName: callData.channelName,
       callType: callData.type || 'video',
