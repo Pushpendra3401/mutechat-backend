@@ -35,4 +35,7 @@ const statusSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Performance Indexes
+statusSchema.index({ user: 1, expiresAt: 1 });
+
 module.exports = mongoose.model('Status', statusSchema);
