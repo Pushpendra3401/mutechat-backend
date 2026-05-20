@@ -100,6 +100,16 @@ exports.getMessages = asyncHandler(async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 20;
 
+  // Security: Ensure user is a participant of the chat
+  const chat = await Chat.findOne({
+    _id: chatId,
+    participants: { $in: [req.user._id] }
+  });
+
+  if (!chat) {
+    throw new ApiError(403, 'You are not a participant of this chat');
+  }
+
   const total = await Message.countDocuments({ chat: chatId });
   const messages = await Message.find({ chat: chatId })
     .sort('-createdAt')

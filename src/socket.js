@@ -1,4 +1,5 @@
 const { Server } = require('socket.io');
+const jwt = require('jsonwebtoken');
 const Message = require('./models/message.model');
 const Chat = require('./models/chat.model');
 const User = require('./models/user.model');
@@ -12,6 +13,9 @@ class SocketManager {
         origin: '*',
         methods: ['GET', 'POST'],
       },
+      // Keep-alive settings for production stability
+      pingTimeout: 60000,
+      pingInterval: 25000,
       // Horizontal Scaling Support (Production)
       // adapter: require('socket.io-redis')({ host: process.env.REDIS_HOST, port: 6379 })
     });
@@ -20,69 +24,88 @@ class SocketManager {
   }
 
   init() {
+    // 0. Middleware for Socket Authentication
+    this.io.use(async (socket, next) => {
+      try {
+        const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+        
+        if (!token) {
+          return next(new Error('Authentication error: Token missing'));
+        }
+
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const user = await User.findById(decoded.id).select('_id name');
+        
+        if (!user) {
+          return next(new Error('Authentication error: User not found'));
+        }
+
+        socket.userId = user._id.toString();
+        socket.user = user;
+        next();
+      } catch (err) {
+        console.error('[Socket Auth] Error:', err.message);
+        return next(new Error('Authentication error: Invalid token'));
+      }
+    });
+
     this.io.on('connection', (socket) => {
-      console.log('User connected:', socket.id);
+      console.log(`[Socket] Connected: ${socket.id} (User: ${socket.userId})`);
 
       // 1. User Setup & Room
-      socket.on('setup', (userId) => {
-        if (!userId) {
-          console.error('[Socket] Setup failed: No userId provided');
-          return;
+      // Note: We use the userId from the authenticated socket instead of relying on client data
+      const userId = socket.userId;
+      
+      // ENFORCE SINGLE SOCKET PER USER
+      const existingSocketId = this.onlineUsers.get(userId);
+      if (existingSocketId && existingSocketId !== socket.id) {
+        console.log(`[Socket] Replacing stale socket ${existingSocketId} for user ${userId}`);
+        const existingSocket = this.io.sockets.sockets.get(existingSocketId);
+        if (existingSocket) {
+          existingSocket.emit('force_disconnect', { reason: 'Logged in from another device' });
+          existingSocket.disconnect(true);
         }
-        
-        // ENFORCE SINGLE SOCKET PER USER
-        const existingSocketId = this.onlineUsers.get(userId);
-        if (existingSocketId && existingSocketId !== socket.id) {
-          console.log(`[Socket] Replacing stale socket ${existingSocketId} for user ${userId}`);
-          const existingSocket = this.io.sockets.sockets.get(existingSocketId);
-          if (existingSocket) {
-            existingSocket.emit('force_disconnect', { reason: 'Logged in from another device' });
-            existingSocket.disconnect(true);
-          }
-        }
+      }
 
-        socket.join(userId);
-        this.onlineUsers.set(userId, socket.id);
-        socket.userId = userId;
+      socket.join(userId);
+      this.onlineUsers.set(userId, socket.id);
+      
+      console.log(`[Socket] USER_READY: ${userId} | Socket: ${socket.id}`);
+      
+      socket.emit('connected', { socketId: socket.id });
+      
+      // Mark user as online
+      User.findByIdAndUpdate(userId, { 
+        onlineStatus: true,
+        lastSeen: Date.now() 
+      }).then(async () => {
+        this.io.emit('online_status', { userId, status: true });
         
-        console.log(`[Socket] USER_CONNECTED: ${userId} | Socket: ${socket.id}`);
+        // Mark pending messages as delivered
+        const result = await Message.updateMany(
+          { receiver: userId, status: 'sent' },
+          { status: 'delivered' }
+        );
         
-        socket.emit('connected', { socketId: socket.id });
-        
-        // Mark user as online
-        User.findByIdAndUpdate(userId, { 
-          onlineStatus: true,
-          lastSeen: Date.now() 
-        }).then(async () => {
-          this.io.emit('online_status', { userId, status: true });
+        if (result.modifiedCount > 0) {
+          console.log(`[Socket] Marked ${result.modifiedCount} messages as delivered for ${userId}`);
           
-          // Mark pending messages as delivered
-          const result = await Message.updateMany(
-            { receiver: userId, status: 'sent' },
-            { status: 'delivered' }
-          );
-          
-          if (result.modifiedCount > 0) {
-            console.log(`[Socket] Marked ${result.modifiedCount} messages as delivered for ${userId}`);
-            
-            // Find chats where messages were delivered to notify senders
-            const chatsWithDeliveredMessages = await Message.find({ 
-              receiver: userId, 
-              status: 'delivered' 
-            }).distinct('chat');
+          // Find chats where messages were delivered to notify senders
+          const chatsWithDeliveredMessages = await Message.find({ 
+            receiver: userId, 
+            status: 'delivered' 
+          }).distinct('chat');
 
-            chatsWithDeliveredMessages.forEach(chatId => {
-              // Emit to the chat room so the sender(s) get the update
-              this.io.to(chatId.toString()).emit('messages_marked_delivered', { 
-                chatId: chatId.toString(), 
-                userId 
-              });
+          chatsWithDeliveredMessages.forEach(chatId => {
+            this.io.to(chatId.toString()).emit('messages_marked_delivered', { 
+              chatId: chatId.toString(), 
+              userId 
             });
-          }
-        }).catch(err => console.error('[Socket] Status update error:', err));
+          });
+        }
+      }).catch(err => console.error('[Socket] Status update error:', err));
 
-        this.io.emit('online_users', Array.from(this.onlineUsers.keys()));
-      });
+      this.io.emit('online_users', Array.from(this.onlineUsers.keys()));
 
       // 2. Room Management
       socket.on('join_chat', (chatId) => {
@@ -100,6 +123,13 @@ class SocketManager {
       // 3. Send Message (with Acknowledgement)
       socket.on('send_message', async (data, callback) => {
         const { sender, receiver, text, media, replyTo, chatId, tempId, clientMessageId } = data;
+
+        // Security: Ensure sender matches authenticated socket user
+        if (sender !== socket.userId) {
+          console.error(`[Socket] SECURITY ALERT: User ${socket.userId} tried to send message as ${sender}`);
+          if (callback) callback({ status: 'error', message: 'Unauthorized sender' });
+          return;
+        }
 
         if (!sender || !receiver || !chatId) {
           console.error(`[Socket] ERROR: Missing data for message from ${socket.userId}. ChatId: ${chatId}`);
@@ -136,9 +166,10 @@ class SocketManager {
           console.log(`[Socket] DB: Message created with ID ${newMessage._id}. Status: ${newMessage.status}`);
 
           // Update Chat
+          const unreadKey = `unreadCount.${receiver}`;
           const chat = await Chat.findByIdAndUpdate(chatId, {
             lastMessage: newMessage._id,
-            $inc: { [`unreadCount.${receiver}`]: 1 }
+            $inc: { [unreadKey]: 1 }
           }, { new: true });
 
           if (!chat) {
@@ -182,8 +213,8 @@ class SocketManager {
             });
 
           console.log(`[Socket] EMIT: chat_update to sender ${sender} and receiver ${receiver}`);
-          this.io.to(sender).emit(`chat_update_${sender}`, updatedChat);
-          this.io.to(receiver).emit(`chat_update_${receiver}`, updatedChat);
+          this.io.to(sender).emit('chat_update', updatedChat);
+          this.io.to(receiver).emit('chat_update', updatedChat);
 
           // PUSH NOTIFICATION: Send if receiver is not online or not in the room
           const isReceiverInRoom = receiverSocket ? this.io.sockets.adapter.rooms.get(chatId)?.has(receiverSocket) : false;
@@ -225,6 +256,9 @@ class SocketManager {
       socket.on('message_seen', async (data) => {
         const { chatId, userId } = data; 
         
+        // Security: Ensure userId matches authenticated socket user
+        if (userId !== socket.userId) return;
+
         try {
           if (!chatId || !userId) return;
 
@@ -295,6 +329,18 @@ class SocketManager {
 
       // 6. Call signaling - FIXED: Changed from 'call_user' to 'initiate_call' to match frontend
       socket.on('initiate_call', async (data) => {
+        // Security: Ensure caller matches authenticated socket user
+        let currentCallerId;
+        if (data.caller && typeof data.caller === 'object') {
+          currentCallerId = data.caller.id || data.caller._id;
+        } else {
+          currentCallerId = data.callerId;
+        }
+
+        if (currentCallerId !== socket.userId) {
+          console.error(`[Socket] SECURITY ALERT: User ${socket.userId} tried to initiate call as ${currentCallerId}`);
+          return;
+        }
         // TASK 3 - SOCKET EMIT: Backend receives outgoing call event
         console.log('[Socket] Incoming call event received on backend');
         console.log('[Call] Raw data received:', JSON.stringify(data));
@@ -509,18 +555,41 @@ class SocketManager {
       });
 
       // 7. Disconnect
-      socket.on('disconnect', async () => {
+      socket.on('disconnect', async (reason) => {
         if (socket.userId) {
-          console.log(`[Socket] User ${socket.userId} disconnected`);
-          this.onlineUsers.delete(socket.userId);
+          console.log(`[Socket] User ${socket.userId} disconnected. Reason: ${reason}`);
           
-          await User.findByIdAndUpdate(socket.userId, { 
-            onlineStatus: false,
-            lastSeen: Date.now() 
-          });
+          // Only remove and mark offline if this is the CURRENT active socket for this user
+          if (this.onlineUsers.get(socket.userId) === socket.id) {
+            this.onlineUsers.delete(socket.userId);
+            
+            await User.findByIdAndUpdate(socket.userId, { 
+              onlineStatus: false,
+              lastSeen: Date.now() 
+            });
 
-          this.io.emit('online_status', { userId: socket.userId, status: false });
-          this.io.emit('online_users', Array.from(this.onlineUsers.keys()));
+            this.io.emit('online_status', { userId: socket.userId, status: false });
+            this.io.emit('online_users', Array.from(this.onlineUsers.keys()));
+
+            // Handle any active calls this user was in
+            const activeCall = await Call.findOne({
+              $or: [{ caller: socket.userId }, { receiver: socket.userId }],
+              status: { $in: ['initiated', 'ringing', 'accepted'] }
+            });
+
+            if (activeCall) {
+               console.log(`[Socket] Ending active call ${activeCall.channelName} due to user disconnect`);
+               activeCall.status = 'ended';
+               activeCall.endTime = Date.now();
+               await activeCall.save();
+
+               const otherUser = activeCall.caller.toString() === socket.userId 
+                 ? activeCall.receiver.toString() 
+                 : activeCall.caller.toString();
+               
+               this.io.to(otherUser).emit('call_ended', { channelName: activeCall.channelName });
+            }
+          }
         }
       });
     });

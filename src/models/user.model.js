@@ -100,4 +100,8 @@ userSchema.methods.matchPassword = async function (enteredPassword) {
   return await bcrypt.compare(enteredPassword, this.password);
 };
 
+// Performance Indexes
+userSchema.index({ mobileNumber: 1 });
+userSchema.index({ onlineStatus: 1 });
+
 module.exports = mongoose.model('User', userSchema);
