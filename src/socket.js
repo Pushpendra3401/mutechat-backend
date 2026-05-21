@@ -109,10 +109,17 @@ class SocketManager {
         
         // Only trigger cleanup if this was the ACTIVE socket
         if (this.onlineUsers.get(userId) === socket.id) {
-          console.log(`[Socket] Starting 15s grace period for user ${userId} to reconnect...`);
+          console.log(`[Socket] Starting 30s grace period for user ${userId} to reconnect...`);
           
           const timeoutId = setTimeout(async () => {
-            console.log(`[Socket] Grace period expired for user ${userId}. Marking offline.`);
+            // RE-VERIFY: If the user reconnected during the timeout, abort cleanup
+            const currentSocketId = this.onlineUsers.get(userId);
+            if (currentSocketId && currentSocketId !== socket.id) {
+               console.log(`[Socket] Grace period aborted: User ${userId} reconnected with socket ${currentSocketId}`);
+               return;
+            }
+
+            console.log(`[Socket] Grace period EXPIRED for user ${userId}. Marking offline.`);
             
             this.onlineUsers.delete(userId);
             this.reconnectTimeouts.delete(userId);
@@ -127,11 +134,11 @@ class SocketManager {
             // Atomic Call Cleanup ONLY after grace period expires
             const activeCall = await Call.findOne({
               $or: [{ caller: userId }, { receiver: userId }],
-              status: { $in: ['initiated', 'ringing', 'accepted'] }
+              status: { $in: ['initiated', 'ringing', 'accepted', 'ongoing'] }
             });
 
             if (activeCall) {
-               console.log(`[Socket] Ending active call ${activeCall.channelName} due to persistent disconnect`);
+               console.log(`[Socket] Ending active call ${activeCall.channelName} due to persistent disconnect after 30s`);
                activeCall.status = 'ended';
                activeCall.endTime = Date.now();
                await activeCall.save();
@@ -142,10 +149,10 @@ class SocketManager {
                
                this.io.to(otherUser).emit('call_ended', { 
                  channelName: activeCall.channelName,
-                 reason: 'peer_disconnected' 
+                 reason: 'peer_disconnected_timeout' 
                });
             }
-          }, 15000); // 15 second grace period for mobile network switching
+          }, 30000); // Increased to 30s for better recovery on mobile
 
           this.reconnectTimeouts.set(userId, timeoutId);
         }
@@ -565,20 +572,42 @@ class SocketManager {
 
       socket.on('end_call', async (data) => {
         const { otherUserId, channelName } = data;
-        console.log(`[Call] Call ended`);
-        console.log(`[Call] Channel: ${channelName}`);
-        console.log(`[Call] Ended by: ${socket.userId}`);
-        console.log(`[Call] Notifying other user: ${otherUserId}`);
+        const userId = socket.userId;
+
+        console.log(`[Call] end_call request from ${userId} for channel: ${channelName}`);
         
         try {
-          await Call.findOneAndUpdate(
-            { channelName, status: { $ne: 'ended' } },
-            { status: 'ended', endTime: Date.now() }
-          );
-          console.log(`[Call] Call record updated to ended status`);
+          // 1. Check current call state
+          const call = await Call.findOne({ channelName });
+          
+          if (!call) {
+            console.warn(`[Call] end_call ignored: Channel ${channelName} not found.`);
+            return;
+          }
+
+          if (call.status === 'ended') {
+            console.log(`[Call] end_call ignored: Channel ${channelName} already ended.`);
+            return;
+          }
+
+          // PROTECTION: Prevent end_call from cleaning up a call that was JUST accepted
+          // If the call was accepted less than 2 seconds ago, it might be a race condition from UI disposal
+          const timeSinceAccept = Date.now() - (call.startTime || 0);
+          if (call.status === 'accepted' && timeSinceAccept < 2000) {
+             console.warn(`[Call] RACE CONDITION DETECTED: Ignoring end_call received JUST after accept (${timeSinceAccept}ms)`);
+             return;
+          }
+
+          console.log(`[Call] Ending channel: ${channelName} | Initiated by: ${userId}`);
+          
+          call.status = 'ended';
+          call.endTime = Date.now();
+          await call.save();
+          
+          console.log(`[Call] DB updated to ended for ${channelName}`);
           
           this.io.to(otherUserId).emit('call_ended', { channelName });
-          console.log(`[Socket] Call ended event emitted to user ${otherUserId}`);
+          console.log(`[Socket] call_ended emitted to ${otherUserId}`);
         } catch (error) {
           console.error('[CALL] End update error:', error.message);
         }
@@ -589,45 +618,6 @@ class SocketManager {
         // Broadcast new status to all online users or specifically to contacts
         // For simplicity in this MVP, broadcast to all
         socket.broadcast.emit('status_update', data);
-      });
-
-      // 7. Disconnect
-      socket.on('disconnect', async (reason) => {
-        if (socket.userId) {
-          console.log(`[Socket] User ${socket.userId} disconnected. Reason: ${reason}`);
-          
-          // Only remove and mark offline if this is the CURRENT active socket for this user
-          if (this.onlineUsers.get(socket.userId) === socket.id) {
-            this.onlineUsers.delete(socket.userId);
-            
-            await User.findByIdAndUpdate(socket.userId, { 
-              onlineStatus: false,
-              lastSeen: Date.now() 
-            });
-
-            this.io.emit('online_status', { userId: socket.userId, status: false });
-            this.io.emit('online_users', Array.from(this.onlineUsers.keys()));
-
-            // Handle any active calls this user was in
-            const activeCall = await Call.findOne({
-              $or: [{ caller: socket.userId }, { receiver: socket.userId }],
-              status: { $in: ['initiated', 'ringing', 'accepted'] }
-            });
-
-            if (activeCall) {
-               console.log(`[Socket] Ending active call ${activeCall.channelName} due to user disconnect`);
-               activeCall.status = 'ended';
-               activeCall.endTime = Date.now();
-               await activeCall.save();
-
-               const otherUser = activeCall.caller.toString() === socket.userId 
-                 ? activeCall.receiver.toString() 
-                 : activeCall.caller.toString();
-               
-               this.io.to(otherUser).emit('call_ended', { channelName: activeCall.channelName });
-            }
-          }
-        }
       });
     });
   }
