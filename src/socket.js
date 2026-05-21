@@ -21,6 +21,7 @@ class SocketManager {
     });
 
     this.onlineUsers = new Map(); // userId -> socketId
+    this.reconnectTimeouts = new Map(); // userId -> timeoutId
   }
 
   init() {
@@ -30,6 +31,7 @@ class SocketManager {
         const token = socket.handshake.auth?.token || socket.handshake.query?.token;
         
         if (!token) {
+          console.warn(`[Socket Auth] Connection rejected: Token missing for socket ${socket.id}`);
           return next(new Error('Authentication error: Token missing'));
         }
 
@@ -37,6 +39,7 @@ class SocketManager {
         const user = await User.findById(decoded.id).select('_id name');
         
         if (!user) {
+          console.warn(`[Socket Auth] Connection rejected: User not found for token ${token.substring(0, 10)}...`);
           return next(new Error('Authentication error: User not found'));
         }
 
@@ -50,19 +53,27 @@ class SocketManager {
     });
 
     this.io.on('connection', (socket) => {
-      console.log(`[Socket] Connected: ${socket.id} (User: ${socket.userId})`);
-
-      // 1. User Setup & Room
-      // Note: We use the userId from the authenticated socket instead of relying on client data
       const userId = socket.userId;
+      console.log(`[Socket] Connected: ${socket.id} (User: ${userId}) | Transport: ${socket.conn.transport.name}`);
+
+      // CLEAR ANY RECONNECT TIMEOUT (Grace Period)
+      if (this.reconnectTimeouts.has(userId)) {
+        console.log(`[Socket] Reconnect within grace period for user ${userId}. Cancelling cleanup.`);
+        clearTimeout(this.reconnectTimeouts.get(userId));
+        this.reconnectTimeouts.delete(userId);
+      }
       
-      // ENFORCE SINGLE SOCKET PER USER
+      // ENFORCE SINGLE SOCKET PER USER - SAFE REPLACEMENT
       const existingSocketId = this.onlineUsers.get(userId);
       if (existingSocketId && existingSocketId !== socket.id) {
-        console.log(`[Socket] Replacing stale socket ${existingSocketId} for user ${userId}`);
+        console.log(`[Socket] User ${userId} connected from new socket ${socket.id}. Replacing stale ${existingSocketId}`);
         const existingSocket = this.io.sockets.sockets.get(existingSocketId);
         if (existingSocket) {
-          existingSocket.emit('force_disconnect', { reason: 'Logged in from another device' });
+          // Send specific event so frontend knows it was replaced
+          existingSocket.emit('force_disconnect', { 
+            reason: 'session_replaced',
+            message: 'You have been connected from another session.' 
+          });
           existingSocket.disconnect(true);
         }
       }
@@ -70,43 +81,81 @@ class SocketManager {
       socket.join(userId);
       this.onlineUsers.set(userId, socket.id);
       
-      console.log(`[Socket] USER_READY: ${userId} | Socket: ${socket.id}`);
+      // Notify client they are ready
+      socket.emit('setup_complete', { userId, socketId: socket.id });
       
-      socket.emit('connected', { socketId: socket.id });
-      socket.emit('setup_complete', { userId });
-      
-      // Mark user as online
+      // Update DB and broadcast status
       User.findByIdAndUpdate(userId, { 
         onlineStatus: true,
         lastSeen: Date.now() 
       }).then(async () => {
         this.io.emit('online_status', { userId, status: true });
         
-        // Mark pending messages as delivered
+        // Auto-deliver pending messages
         const result = await Message.updateMany(
           { receiver: userId, status: 'sent' },
           { status: 'delivered' }
         );
         
         if (result.modifiedCount > 0) {
-          console.log(`[Socket] Marked ${result.modifiedCount} messages as delivered for ${userId}`);
-          
-          // Find chats where messages were delivered to notify senders
-          const chatsWithDeliveredMessages = await Message.find({ 
-            receiver: userId, 
-            status: 'delivered' 
-          }).distinct('chat');
-
-          chatsWithDeliveredMessages.forEach(chatId => {
-            this.io.to(chatId.toString()).emit('messages_marked_delivered', { 
-              chatId: chatId.toString(), 
-              userId 
-            });
-          });
+          console.log(`[Socket] Auto-delivered ${result.modifiedCount} messages for ${userId}`);
+          this.io.emit('messages_marked_delivered', { userId });
         }
       }).catch(err => console.error('[Socket] Status update error:', err));
 
-      this.io.emit('online_users', Array.from(this.onlineUsers.keys()));
+      // 7. Disconnect Logic with Grace Period
+      socket.on('disconnect', async (reason) => {
+        console.log(`[Socket] Disconnected: ${socket.id} (User: ${userId}) | Reason: ${reason}`);
+        
+        // Only trigger cleanup if this was the ACTIVE socket
+        if (this.onlineUsers.get(userId) === socket.id) {
+          console.log(`[Socket] Starting 15s grace period for user ${userId} to reconnect...`);
+          
+          const timeoutId = setTimeout(async () => {
+            console.log(`[Socket] Grace period expired for user ${userId}. Marking offline.`);
+            
+            this.onlineUsers.delete(userId);
+            this.reconnectTimeouts.delete(userId);
+            
+            await User.findByIdAndUpdate(userId, { 
+              onlineStatus: false,
+              lastSeen: Date.now() 
+            });
+
+            this.io.emit('online_status', { userId, status: false });
+
+            // Atomic Call Cleanup ONLY after grace period expires
+            const activeCall = await Call.findOne({
+              $or: [{ caller: userId }, { receiver: userId }],
+              status: { $in: ['initiated', 'ringing', 'accepted'] }
+            });
+
+            if (activeCall) {
+               console.log(`[Socket] Ending active call ${activeCall.channelName} due to persistent disconnect`);
+               activeCall.status = 'ended';
+               activeCall.endTime = Date.now();
+               await activeCall.save();
+
+               const otherUser = activeCall.caller.toString() === userId 
+                 ? activeCall.receiver.toString() 
+                 : activeCall.caller.toString();
+               
+               this.io.to(otherUser).emit('call_ended', { 
+                 channelName: activeCall.channelName,
+                 reason: 'peer_disconnected' 
+               });
+            }
+          }, 15000); // 15 second grace period for mobile network switching
+
+          this.reconnectTimeouts.set(userId, timeoutId);
+        }
+      });
+
+      // Heartbeat Logging
+      socket.conn.on('packet', (packet) => {
+        if (packet.type === 'ping') console.log(`[Socket] PING from ${socket.id}`);
+        if (packet.type === 'pong') console.log(`[Socket] PONG to ${socket.id}`);
+      });
 
       // 2. Room Management
       socket.on('join_chat', (chatId) => {
@@ -330,6 +379,8 @@ class SocketManager {
 
       // 6. Call signaling - FIXED: Changed from 'call_user' to 'initiate_call' to match frontend
       socket.on('initiate_call', async (data) => {
+        const userId = socket.userId;
+        
         // Security: Ensure caller matches authenticated socket user
         let currentCallerId;
         if (data.caller && typeof data.caller === 'object') {
@@ -338,52 +389,58 @@ class SocketManager {
           currentCallerId = data.callerId;
         }
 
-        if (currentCallerId !== socket.userId) {
-          console.error(`[Socket] SECURITY ALERT: User ${socket.userId} tried to initiate call as ${currentCallerId}`);
+        if (currentCallerId !== userId) {
+          console.error(`[Socket] SECURITY ALERT: User ${userId} tried to initiate call as ${currentCallerId}`);
           return;
         }
         
-        console.log(`[Call] initiate_call: From ${currentCallerId} for channel ${data.channelId || data.channelName}`);
+        const channelName = data.channelId || data.channelName;
+        console.log(`[Call] initiate_call: From ${userId} for channel ${channelName}`);
         
+        // CHECK FOR ALREADY ACTIVE CALL TO PREVENT DUPLICATES
+        const existingCall = await Call.findOne({
+          channelName,
+          status: { $in: ['initiated', 'ringing', 'accepted'] }
+        });
+
+        if (existingCall) {
+          console.log(`[Call] DUPLICATE_PREVENTED: Call for channel ${channelName} is already active.`);
+          return;
+        }
+
         // Parse data - frontend sends CallModel.toJson() with caller/receiver objects
-        let callerId, receiverId, type, channelName, chatId;
+        let receiverId, type, chatId;
         
         if (data.caller && typeof data.caller === 'object') {
-          // Frontend sends full CallModel with user objects
-          callerId = data.caller.id || data.caller._id;
           receiverId = data.receiver.id || data.receiver._id;
           type = data.type;
-          channelName = data.channelId;
           chatId = data.chatId;
         } else {
-          // Fallback for backward compatibility
-          callerId = data.callerId;
           receiverId = data.receiverId;
           type = data.type;
-          channelName = data.channelName;
           chatId = data.chatId;
         }
         
-        if (!callerId || !receiverId || !channelName) {
+        if (!userId || !receiverId || !channelName) {
           console.error('[CALL] Creation failed: Missing required data');
           return;
         }
 
         try {
           const [caller, receiver] = await Promise.all([
-            User.findById(callerId),
+            User.findById(userId),
             User.findById(receiverId)
           ]);
 
           if (!caller || !receiver) {
             console.error('[CALL] User not found');
-            this.io.to(callerId).emit('call_error', { message: 'Receiver not found' });
+            this.io.to(userId).emit('call_error', { message: 'Receiver not found' });
             return;
           }
 
           // 1. Create and Save Call Record FIRST
-          const callRecord = await Call.create({
-            caller: callerId,
+          await Call.create({
+            caller: userId,
             receiver: receiverId,
             type,
             channelName,
@@ -392,7 +449,7 @@ class SocketManager {
 
           // 2. EMIT TO RECEIVER
           this.io.to(receiverId).emit('incoming_call', {
-            callerId,
+            callerId: userId,
             callerName: caller.name,
             callerAvatar: caller.avatar,
             type,
@@ -407,13 +464,13 @@ class SocketManager {
             await sendCallNotification(receiver.fcmToken, caller, {
               channelName,
               chatId,
-              type, // video/audio
+              type,
             });
           }
 
         } catch (error) {
           console.error('[CALL] FATAL ERROR in initiate_call:', error.message);
-          this.io.to(callerId).emit('call_error', { message: 'Failed to initiate call' });
+          this.io.to(userId).emit('call_error', { message: 'Failed to initiate call' });
         }
       });
 
