@@ -498,16 +498,80 @@ class SocketManager {
 
       socket.on('call_busy', async (data) => {
         const { callerId, channelName } = data;
-        console.log(`[CALL] BUSY: Channel ${channelName} for caller ${callerId}`);
-        
         try {
           await Call.findOneAndUpdate(
-            { channelName, status: 'initiated' },
-            { status: 'busy' }
+            { channelName, status: { $in: ['initiated', 'ringing'] } },
+            { status: 'ended' }
           );
           this.io.to(callerId).emit('call_busy', { channelName });
         } catch (error) {
           console.error('[CALL] Busy update error:', error.message);
+        }
+      });
+
+      // Realtime Call Captions
+      socket.on('call_caption', (data) => {
+        const { otherUserId, text, isFinal, channelName } = data;
+        if (!channelName) return;
+        
+        // If otherUserId is not provided, we can broadcast to the room
+        // For 1:1 calls, room is safer or direct emit
+        if (otherUserId) {
+          this.io.to(otherUserId).emit('call_caption', {
+            text,
+            isFinal,
+            senderId: socket.userId,
+            channelName
+          });
+        } else {
+          socket.to(channelName).emit('call_caption', {
+            text,
+            isFinal,
+            senderId: socket.userId,
+            channelName
+          });
+        }
+      });
+
+      // Realtime Call TTS Messaging
+      socket.on('call_tts_message', (data) => {
+        const { otherUserId, text, channelName } = data;
+        if (!channelName || !text) return;
+
+        console.log(`[Call] TTS: From ${socket.userId} to ${otherUserId || channelName} | Msg: ${text.substring(0, 20)}...`);
+        
+        if (otherUserId) {
+          this.io.to(otherUserId).emit('call_tts_message', {
+            text,
+            senderId: socket.userId,
+            channelName
+          });
+        } else {
+          socket.to(channelName).emit('call_tts_message', {
+            text,
+            senderId: socket.userId,
+            channelName
+          });
+        }
+      });
+
+      // Call Reactions
+      socket.on('call_reaction', (data) => {
+        const { otherUserId, emoji, channelName } = data;
+        if (!channelName) return;
+
+        if (otherUserId) {
+          this.io.to(otherUserId).emit('call_reaction', {
+            emoji,
+            senderId: socket.userId,
+            channelName
+          });
+        } else {
+          socket.to(channelName).emit('call_reaction', {
+            emoji,
+            senderId: socket.userId,
+            channelName
+          });
         }
       });
 
@@ -532,21 +596,6 @@ class SocketManager {
         } catch (error) {
           console.error('[CALL] Accept update error:', error.message);
         }
-      });
-
-      // 6.1 Call Reactions
-      socket.on('call_reaction', (data) => {
-        const { channelName, emoji, senderId } = data;
-        console.log(`[CALL] REACTION: ${emoji} in ${channelName} from ${senderId}`);
-        // Broadcast to everyone in the call room except sender
-        socket.to(channelName).emit('call_reaction', { emoji, senderId });
-      });
-
-      // 6.2 Call Captions
-      socket.on('call_caption', (data) => {
-        const { channelName, text, senderId, isFinal } = data;
-        console.log(`[CALL] CAPTION: ${text} in ${channelName} from ${senderId}`);
-        socket.to(channelName).emit('call_caption', { text, senderId, isFinal });
       });
 
       socket.on('reject_call', async (data) => {
