@@ -11,6 +11,7 @@ const chatRoutes = require('./routes/chat.routes');
 const callRoutes = require('./routes/call.routes');
 const statusRoutes = require('./routes/status.routes');
 const contactRoutes = require('./routes/contact.routes');
+const communityRoutes = require('./routes/community.routes');
 const compression = require('compression');
 const ApiError = require('./utils/ApiError');
 
@@ -83,6 +84,7 @@ app.use('/chat', chatRoutes);
 app.use('/call', callRoutes);
 app.use('/status', statusRoutes);
 app.use('/contact', contactRoutes);
+app.use('/community', communityRoutes);
 
 // 5. 404 Handler
 app.all('*', (req, res, next) => {

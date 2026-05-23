@@ -48,3 +48,17 @@ exports.getCallHistory = asyncHandler(async (req, res) => {
 
   res.status(200).json(new ApiResponse(200, history, 'Call history fetched successfully'));
 });
+
+/**
+ * @desc    Clear Call History
+ * @route   DELETE /api/v1/call/history
+ * @access  Private
+ */
+exports.clearCallHistory = asyncHandler(async (req, res) => {
+  await Call.deleteMany({
+    $or: [{ caller: req.user.id }, { receiver: req.user.id }],
+  });
+
+  res.status(200).json(new ApiResponse(200, null, 'Call history cleared successfully'));
+});
+

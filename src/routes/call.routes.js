@@ -7,5 +7,6 @@ router.use(protect);
 
 router.post('/token', callController.getCallToken);
 router.get('/history', callController.getCallHistory);
+router.delete('/history', callController.clearCallHistory);
 
 module.exports = router;
