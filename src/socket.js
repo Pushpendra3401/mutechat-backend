@@ -576,46 +576,57 @@ class SocketManager {
       });
 
       socket.on('accept_call', async (data) => {
-        const { callerId, channelName } = data;
+        const { channelName } = data;
         const receiverId = socket.userId;
         
-        console.log(`[Call] Call accepted`);
-        console.log(`[Call] Channel: ${channelName}`);
-        console.log(`[Call] Accepted by receiver: ${receiverId}`);
-        console.log(`[Call] For caller: ${callerId}`);
+        console.log(`[CALL_ACCEPT] start | Channel: ${channelName} | Receiver: ${receiverId}`);
 
         try {
-          await Call.findOneAndUpdate(
-            { channelName },
-            { status: 'accepted', startTime: Date.now() }
-          );
-          console.log(`[Call] Call record updated to accepted status`);
+          // Find the call session first to get the callerId
+          const call = await Call.findOne({ channelName });
+          if (!call) {
+            console.error(`[CALL_ACCEPT] ERROR: Call session not found for channel: ${channelName}`);
+            return;
+          }
+
+          const callerId = call.callerId.toString();
+          console.log(`[CALL_ACCEPT] callerId: ${callerId}`);
+          console.log(`[CALL_ACCEPT] receiverId: ${receiverId}`);
+
+          call.status = 'accepted';
+          call.startTime = Date.now();
+          await call.save();
+          console.log(`[CALL_ACCEPT] DB updated to accepted`);
           
+          console.log(`[CALL_ACCEPT] emitting to caller: ${callerId}`);
           this.io.to(callerId).emit('call_accepted', { channelName });
-          console.log(`[Socket] Call accepted event emitted to caller ${callerId}`);
         } catch (error) {
-          console.error('[CALL] Accept update error:', error.message);
+          console.error('[CALL_ACCEPT] ERROR:', error.message);
         }
       });
 
       socket.on('reject_call', async (data) => {
-        const { callerId, channelName } = data;
-        console.log(`[Call] Call rejected`);
-        console.log(`[Call] Channel: ${channelName}`);
-        console.log(`[Call] Rejected by receiver: ${socket.userId}`);
-        console.log(`[Call] For caller: ${callerId}`);
+        const { channelName } = data;
+        console.log(`[CALL_REJECT] start | Channel: ${channelName} | Receiver: ${socket.userId}`);
         
         try {
-          await Call.findOneAndUpdate(
-            { channelName, status: { $in: ['initiated', 'ringing'] } },
-            { status: 'rejected' }
-          );
-          console.log(`[Call] Call record updated to rejected status`);
+          const call = await Call.findOne({ channelName });
+          if (!call) {
+            console.error(`[CALL_REJECT] ERROR: Call session not found for channel: ${channelName}`);
+            return;
+          }
+
+          const callerId = call.callerId.toString();
+          console.log(`[CALL_REJECT] callerId: ${callerId}`);
+
+          call.status = 'rejected';
+          await call.save();
+          console.log(`[CALL_REJECT] DB updated to rejected`);
           
           this.io.to(callerId).emit('call_rejected', { channelName });
-          console.log(`[Socket] Call rejected event emitted to caller ${callerId}`);
+          console.log(`[CALL_REJECT] emitted to caller: ${callerId}`);
         } catch (error) {
-          console.error('[CALL] Reject update error:', error.message);
+          console.error('[CALL_REJECT] ERROR:', error.message);
         }
       });
 
