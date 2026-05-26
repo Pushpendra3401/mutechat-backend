@@ -589,7 +589,7 @@ class SocketManager {
             return;
           }
 
-          const callerId = call.callerId.toString();
+          const callerId = call.caller.toString();
           console.log(`[CALL_ACCEPT] callerId: ${callerId}`);
           console.log(`[CALL_ACCEPT] receiverId: ${receiverId}`);
 
@@ -598,8 +598,16 @@ class SocketManager {
           await call.save();
           console.log(`[CALL_ACCEPT] DB updated to accepted`);
           
-          console.log(`[CALL_ACCEPT] emitting to caller: ${callerId}`);
-          this.io.to(callerId).emit('call_accepted', { channelName });
+          const callerSocketId = this.onlineUsers.get(callerId);
+          console.log(`[CALL_ACCEPT] callerSocketId: ${callerSocketId || 'NOT_FOUND'}`);
+
+          if (callerSocketId) {
+            this.io.to(callerSocketId).emit('call_accepted', { channelName });
+            console.log(`[CALL_ACCEPT] emit success to caller socket: ${callerSocketId}`);
+          } else {
+            console.warn(`[CALL_ACCEPT] WARNING: Caller ${callerId} not online, emitting to room fallback`);
+            this.io.to(callerId).emit('call_accepted', { channelName });
+          }
         } catch (error) {
           console.error('[CALL_ACCEPT] ERROR:', error.message);
         }
@@ -616,7 +624,7 @@ class SocketManager {
             return;
           }
 
-          const callerId = call.callerId.toString();
+          const callerId = call.caller.toString();
           console.log(`[CALL_REJECT] callerId: ${callerId}`);
 
           call.status = 'rejected';
