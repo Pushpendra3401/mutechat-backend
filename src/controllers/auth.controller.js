@@ -4,23 +4,7 @@ const ApiError = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
 const twilioService = require('../services/twilioService');
 const jwtService = require('../services/jwtService');
-
-/**
- * Normalizes phone number to +91XXXXXXXXXX
- * @param {string} phone 
- * @returns {string}
- */
-const normalizePhoneNumber = (phone) => {
-  if (!phone) return phone;
-  let digits = phone.replace(/\D/g, '');
-  if (digits.length === 10) {
-    return `+91${digits}`;
-  }
-  if (digits.length === 12 && digits.startsWith('91')) {
-    return `+${digits}`;
-  }
-  return phone; // Should be caught by validator but fallback just in case
-};
+const { normalizePhoneNumber } = require('../utils/phoneUtils');
 
 /**
  * @desc    Register a new user (Legacy/Email flow - DEPRECATED)

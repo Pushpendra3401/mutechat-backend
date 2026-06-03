@@ -31,7 +31,7 @@ class SocketManager {
         const token = socket.handshake.auth?.token || socket.handshake.query?.token;
         
         if (!token) {
-          console.warn(`[Socket Auth] Connection rejected: Token missing for socket ${socket.id}`);
+          console.warn(`[SOCKET] Connection rejected: Token missing for socket ${socket.id}`);
           return next(new Error('Authentication error: Token missing'));
         }
 
@@ -39,7 +39,7 @@ class SocketManager {
         const user = await User.findById(decoded.id).select('_id name');
         
         if (!user) {
-          console.warn(`[Socket Auth] Connection rejected: User not found for token ${token.substring(0, 10)}...`);
+          console.warn(`[SOCKET] Connection rejected: User not found for token ${token.substring(0, 10)}...`);
           return next(new Error('Authentication error: User not found'));
         }
 
@@ -47,18 +47,18 @@ class SocketManager {
         socket.user = user;
         next();
       } catch (err) {
-        console.error('[Socket Auth] Error:', err.message);
+        console.error('[SOCKET] Auth Error:', err.message);
         return next(new Error('Authentication error: Invalid token'));
       }
     });
 
     this.io.on('connection', (socket) => {
       const userId = socket.userId;
-      console.log(`[Socket] Connected: ${socket.id} (User: ${userId}) | Transport: ${socket.conn.transport.name}`);
+      console.log(`[SOCKET] Connected: ${socket.id} (User: ${userId}) | Transport: ${socket.conn.transport.name}`);
 
       // CLEAR ANY RECONNECT TIMEOUT (Grace Period)
       if (this.reconnectTimeouts.has(userId)) {
-        console.log(`[Socket] Reconnect within grace period for user ${userId}. Cancelling cleanup.`);
+        console.log(`[SOCKET] Reconnect within grace period for user ${userId}. Cancelling cleanup.`);
         clearTimeout(this.reconnectTimeouts.get(userId));
         this.reconnectTimeouts.delete(userId);
       }
@@ -66,10 +66,9 @@ class SocketManager {
       // ENFORCE SINGLE SOCKET PER USER - SAFE REPLACEMENT
       const existingSocketId = this.onlineUsers.get(userId);
       if (existingSocketId && existingSocketId !== socket.id) {
-        console.log(`[Socket] User ${userId} connected from new socket ${socket.id}. Replacing stale ${existingSocketId}`);
+        console.log(`[SOCKET] User ${userId} connected from new socket ${socket.id}. Replacing stale ${existingSocketId}`);
         const existingSocket = this.io.sockets.sockets.get(existingSocketId);
         if (existingSocket) {
-          // Send specific event so frontend knows it was replaced
           existingSocket.emit('force_disconnect', { 
             reason: 'session_replaced',
             message: 'You have been connected from another session.' 
@@ -81,45 +80,40 @@ class SocketManager {
       socket.join(userId);
       this.onlineUsers.set(userId, socket.id);
       
-      // Notify client they are ready
       socket.emit('setup_complete', { userId, socketId: socket.id });
       
-      // Update DB and broadcast status
       User.findByIdAndUpdate(userId, { 
         onlineStatus: true,
         lastSeen: Date.now() 
       }).then(async () => {
         this.io.emit('online_status', { userId, status: true });
         
-        // Auto-deliver pending messages
         const result = await Message.updateMany(
           { receiver: userId, status: 'sent' },
           { status: 'delivered' }
         );
         
         if (result.modifiedCount > 0) {
-          console.log(`[Socket] Auto-delivered ${result.modifiedCount} messages for ${userId}`);
+          console.log(`[SOCKET] Auto-delivered ${result.modifiedCount} messages for ${userId}`);
           this.io.emit('messages_marked_delivered', { userId });
         }
-      }).catch(err => console.error('[Socket] Status update error:', err));
+      }).catch(err => console.error('[SOCKET] Status update error:', err));
 
       // 7. Disconnect Logic with Grace Period
       socket.on('disconnect', async (reason) => {
-        console.log(`[Socket] Disconnected: ${socket.id} (User: ${userId}) | Reason: ${reason}`);
+        console.log(`[SOCKET] Disconnected: ${socket.id} (User: ${userId}) | Reason: ${reason}`);
         
-        // Only trigger cleanup if this was the ACTIVE socket
         if (this.onlineUsers.get(userId) === socket.id) {
-          console.log(`[Socket] Starting 30s grace period for user ${userId} to reconnect...`);
+          console.log(`[SOCKET] Starting 30s grace period for user ${userId} to reconnect...`);
           
           const timeoutId = setTimeout(async () => {
-            // RE-VERIFY: If the user reconnected during the timeout, abort cleanup
             const currentSocketId = this.onlineUsers.get(userId);
             if (currentSocketId && currentSocketId !== socket.id) {
-               console.log(`[Socket] Grace period aborted: User ${userId} reconnected with socket ${currentSocketId}`);
+               console.log(`[SOCKET] Grace period aborted: User ${userId} reconnected with socket ${currentSocketId}`);
                return;
             }
 
-            console.log(`[Socket] Grace period EXPIRED for user ${userId}. Marking offline.`);
+            console.log(`[SOCKET] Grace period EXPIRED for user ${userId}. Marking offline.`);
             
             this.onlineUsers.delete(userId);
             this.reconnectTimeouts.delete(userId);
@@ -138,7 +132,7 @@ class SocketManager {
             });
 
             if (activeCall) {
-               console.log(`[Socket] Ending active call ${activeCall.channelName} due to persistent disconnect after 30s`);
+               console.log(`[CALL] Ending active call ${activeCall.channelName} due to persistent disconnect after 30s`);
                activeCall.status = 'ended';
                activeCall.endTime = Date.now();
                await activeCall.save();
@@ -152,7 +146,7 @@ class SocketManager {
                  reason: 'peer_disconnected_timeout' 
                });
             }
-          }, 30000); // Increased to 30s for better recovery on mobile
+          }, 30000);
 
           this.reconnectTimeouts.set(userId, timeoutId);
         }
@@ -168,13 +162,13 @@ class SocketManager {
       socket.on('join_chat', (chatId) => {
         if (!chatId) return;
         socket.join(chatId);
-        console.log(`[Socket] User ${socket.userId} joined room: ${chatId}`);
+        console.log(`[CHAT] User ${socket.userId} joined room: ${chatId}`);
       });
 
       socket.on('leave_chat', (chatId) => {
         if (!chatId) return;
         socket.leave(chatId);
-        console.log(`[Socket] User ${socket.userId} left room: ${chatId}`);
+        console.log(`[CHAT] User ${socket.userId} left room: ${chatId}`);
       });
 
       // 3. Send Message (with Acknowledgement)
@@ -183,25 +177,25 @@ class SocketManager {
 
         // Security: Ensure sender matches authenticated socket user
         if (sender !== socket.userId) {
-          console.error(`[Socket] SECURITY ALERT: User ${socket.userId} tried to send message as ${sender}`);
+          console.error(`[SOCKET] SECURITY ALERT: User ${socket.userId} tried to send message as ${sender}`);
           if (callback) callback({ status: 'error', message: 'Unauthorized sender' });
           return;
         }
 
         if (!sender || !receiver || !chatId) {
-          console.error(`[Socket] ERROR: Missing data for message from ${socket.userId}. ChatId: ${chatId}`);
+          console.error(`[CHAT] ERROR: Missing data for message from ${socket.userId}. ChatId: ${chatId}`);
           if (callback) callback({ status: 'error', message: 'Missing data' });
           return;
         }
 
-        console.log(`[Socket] MESSAGE_RECEIVED: From ${sender} to ${receiver} in chat ${chatId} | clientMessageId: ${clientMessageId || tempId}`);
+        console.log(`[CHAT] Message from ${sender} to ${receiver} in chat ${chatId}`);
 
         try {
           // Check for existing message with same clientMessageId to prevent duplicates
           if (clientMessageId) {
             const existing = await Message.findOne({ clientMessageId });
             if (existing) {
-              console.log(`[Socket] DUPLICATE_PREVENTED: Message with clientMessageId ${clientMessageId} already exists`);
+              console.log(`[CHAT] Duplicate prevented: ${clientMessageId}`);
               const populated = await Message.findById(existing._id).populate('sender', 'name profilePicture avatar').populate('replyTo');
               if (callback) callback({ status: 'ok', message: populated, tempId: tempId });
               return;
@@ -220,7 +214,7 @@ class SocketManager {
             status: this.onlineUsers.has(receiver) ? 'delivered' : 'sent',
           });
 
-          console.log(`[Socket] DB: Message created with ID ${newMessage._id}. Status: ${newMessage.status}`);
+          console.log(`[CHAT] DB: Message created with ID ${newMessage._id}. Status: ${newMessage.status}`);
 
           // Update Chat
           const unreadKey = `unreadCount.${receiver}`;
@@ -230,7 +224,7 @@ class SocketManager {
           }, { new: true });
 
           if (!chat) {
-            console.error(`[Socket] ERROR: Chat ${chatId} not found during message update`);
+            console.error(`[CHAT] ERROR: Chat ${chatId} not found during message update`);
             throw new Error('Chat not found');
           }
 
@@ -240,7 +234,7 @@ class SocketManager {
             .populate('replyTo');
 
           // Emit to the chat room
-          console.log(`[Socket] EMIT: receive_message to room ${chatId}`);
+          console.log(`[CHAT] EMIT: receive_message to room ${chatId}`);
           this.io.to(chatId).emit('receive_message', messageToEmit);
 
           // If delivered immediately, notify the sender specifically about delivery
@@ -256,7 +250,7 @@ class SocketManager {
           if (receiverSocket) {
             const isReceiverInRoom = this.io.sockets.adapter.rooms.get(chatId)?.has(receiverSocket);
             if (!isReceiverInRoom) {
-              console.log(`[Socket] EMIT: receive_message to receiver personal room ${receiver}`);
+              console.log(`[CHAT] EMIT: receive_message to receiver personal room ${receiver}`);
               this.io.to(receiver).emit('receive_message', messageToEmit);
             }
           }
@@ -269,7 +263,7 @@ class SocketManager {
               populate: { path: 'sender', select: 'name' },
             });
 
-          console.log(`[Socket] EMIT: chat_update to sender ${sender} and receiver ${receiver}`);
+          console.log(`[CHAT] EMIT: chat_update to participants`);
           this.io.to(sender).emit('chat_update', updatedChat);
           this.io.to(receiver).emit('chat_update', updatedChat);
 
@@ -282,7 +276,7 @@ class SocketManager {
               const senderUser = await User.findById(sender).select('name');
               
               if (receiverUser && receiverUser.fcmToken) {
-                console.log(`[Socket] PUSH: Sending message notification to ${receiver}`);
+                console.log(`[FCM] PUSH: Sending message notification to ${receiver}`);
                 await sendMessageNotification(receiverUser.fcmToken, senderUser, {
                   chatId: chatId,
                   text: text,
@@ -290,7 +284,7 @@ class SocketManager {
                 });
               }
             } catch (err) {
-              console.error('[Socket] FCM ERROR in send_message:', err.message);
+              console.error('[FCM] ERROR in send_message:', err.message);
             }
           }
 
@@ -384,138 +378,134 @@ class SocketManager {
         }
       });
 
-      // 6. Call signaling - FIXED: Changed from 'call_user' to 'initiate_call' to match frontend
+      // 4. Calling System
       socket.on('initiate_call', async (data) => {
-        const userId = socket.userId;
+        const { receiver, channelName } = data;
+        const receiverId = receiver._id || receiver.id || receiver;
         
-        // Security: Ensure caller matches authenticated socket user
-        let currentCallerId;
-        if (data.caller && typeof data.caller === 'object') {
-          currentCallerId = data.caller.id || data.caller._id;
-        } else {
-          currentCallerId = data.callerId;
-        }
-
-        if (currentCallerId !== userId) {
-          console.error(`[Socket] SECURITY ALERT: User ${userId} tried to initiate call as ${currentCallerId}`);
-          return;
-        }
+        console.log(`[CALL] INITIATE: ${socket.userId} -> ${receiverId} | Channel: ${channelName}`);
         
-        const channelName = data.channelId || data.channelName;
-        console.log(`[Call] initiate_call: From ${userId} for channel ${channelName}`);
-        
-        // CHECK FOR ALREADY ACTIVE CALL TO PREVENT DUPLICATES
-        const existingCall = await Call.findOne({
-          channelName,
-          status: { $in: ['initiated', 'ringing', 'accepted'] }
-        });
-
-        if (existingCall) {
-          console.log(`[Call] DUPLICATE_PREVENTED: Call for channel ${channelName} is already active.`);
-          return;
-        }
-
-        // Parse data - frontend sends CallModel.toJson() with caller/receiver objects
-        let receiverId, type, chatId;
-        
-        if (data.caller && typeof data.caller === 'object') {
-          receiverId = data.receiver.id || data.receiver._id;
-          type = data.type;
-          chatId = data.chatId;
-        } else {
-          receiverId = data.receiverId;
-          type = data.type;
-          chatId = data.chatId;
-        }
-        
-        if (!userId || !receiverId || !channelName) {
-          console.error('[CALL] Creation failed: Missing required data');
-          return;
-        }
-
         try {
-          const [caller, receiver] = await Promise.all([
-            User.findById(userId),
-            User.findById(receiverId)
-          ]);
-
-          if (!caller || !receiver) {
-            console.error('[CALL] User not found');
-            this.io.to(userId).emit('call_error', { message: 'Receiver not found' });
+          const receiverUser = await User.findById(receiverId).select('fcmToken onlineStatus');
+          if (!receiverUser) {
+            console.error(`[CALL] ERROR: Receiver ${receiverId} not found`);
             return;
           }
 
-          // 1. Create and Save Call Record FIRST
-          await Call.create({
-            caller: userId,
-            receiver: receiverId,
-            type,
-            channelName,
-            status: 'initiated',
-          });
-
-          // 2. EMIT TO RECEIVER
-          this.io.to(receiverId).emit('incoming_call', {
-            callerId: userId,
-            callerName: caller.name,
-            callerAvatar: caller.avatar,
-            type,
-            channelName,
-            chatId,
-          });
-          
-          console.log(`[Socket] Incoming call event emitted to receiver ${receiverId}`);
-
-          // 3. PUSH NOTIFICATION (FCM)
-          if (receiver.fcmToken) {
-            await sendCallNotification(receiver.fcmToken, caller, {
-              channelName,
-              chatId,
-              type,
-            });
+          // Check if receiver is online
+          const receiverSocketId = this.onlineUsers.get(receiverId.toString());
+          if (receiverSocketId) {
+            console.log(`[CALL] EMIT: incoming_call to socket ${receiverSocketId}`);
+            this.io.to(receiverSocketId).emit('incoming_call', data);
+          } else {
+            console.log(`[CALL] Receiver ${receiverId} is OFFLINE via socket`);
           }
 
-        } catch (error) {
-          console.error('[CALL] FATAL ERROR in initiate_call:', error.message);
-          this.io.to(userId).emit('call_error', { message: 'Failed to initiate call' });
+          // Always send push notification for calls
+          if (receiverUser.fcmToken) {
+            const senderUser = await User.findById(socket.userId).select('name avatar');
+            console.log(`[FCM] PUSH: Sending call notification to ${receiverId}`);
+            await sendCallNotification(receiverUser.fcmToken, senderUser, data);
+          }
+        } catch (err) {
+          console.error('[FCM] ERROR in initiate_call:', err.message);
         }
       });
 
-      socket.on('call_ringing', async (data) => {
+      socket.on('call_ringing', (data) => {
         const { callerId, channelName } = data;
-        console.log(`[CALL] RINGING: Channel ${channelName} for caller ${callerId}`);
+        console.log(`[CALL] RINGING: ${channelName} | To: ${callerId}`);
+        this.io.to(callerId).emit('call_ringing', data);
+      });
+
+      socket.on('accept_call', async (data) => {
+        const { channelName } = data;
+        console.log(`[CALL] ACCEPT: ${channelName} by ${socket.userId}`);
         
         try {
-          await Call.findOneAndUpdate(
-            { channelName, status: 'initiated' },
-            { status: 'ringing' }
-          );
-          this.io.to(callerId).emit('call_ringing', { channelName });
-        } catch (error) {
-          console.error('[CALL] Ringing update error:', error.message);
+          const call = await Call.findOne({ channelName, status: { $in: ['initiated', 'ringing'] } });
+          if (call) {
+            call.status = 'accepted';
+            await call.save();
+            
+            const callerId = call.caller.toString();
+            console.log(`[CALL] EMIT: call_accepted to caller ${callerId}`);
+            this.io.to(callerId).emit('call_accepted', data);
+          } else {
+            console.warn(`[CALL] WARN: No pending call found for channel ${channelName} during accept`);
+          }
+        } catch (err) {
+          console.error('[CALL] ERROR in accept_call:', err.message);
         }
       });
 
-      socket.on('call_busy', async (data) => {
-        const { callerId, channelName } = data;
+      socket.on('reject_call', async (data) => {
+        const { channelName } = data;
+        console.log(`[CALL] REJECT: ${channelName} by ${socket.userId}`);
+        
         try {
-          await Call.findOneAndUpdate(
-            { channelName, status: { $in: ['initiated', 'ringing'] } },
-            { status: 'ended' }
-          );
-          this.io.to(callerId).emit('call_busy', { channelName });
-        } catch (error) {
-          console.error('[CALL] Busy update error:', error.message);
+          const call = await Call.findOne({ channelName, status: { $in: ['initiated', 'ringing'] } });
+          if (call) {
+            call.status = 'rejected';
+            call.endTime = Date.now();
+            await call.save();
+            
+            const callerId = call.caller.toString();
+            console.log(`[CALL] EMIT: call_rejected to caller ${callerId}`);
+            this.io.to(callerId).emit('call_rejected', data);
+          }
+        } catch (err) {
+          console.error('[CALL] ERROR in reject_call:', err.message);
         }
       });
 
-      // Realtime Call Captions
+      socket.on('end_call', async (data) => {
+        const { channelName, otherUserId } = data;
+        console.log(`[CALL] END: ${channelName} by ${socket.userId}`);
+        
+        try {
+          const call = await Call.findOne({ channelName });
+          if (call && call.status !== 'ended') {
+            call.status = 'ended';
+            call.endTime = Date.now();
+            await call.save();
+          }
+          
+          if (otherUserId) {
+            console.log(`[CALL] EMIT: call_ended to peer ${otherUserId}`);
+            this.io.to(otherUserId).emit('call_ended', data);
+          }
+        } catch (err) {
+          console.error('[CALL] ERROR in end_call:', err.message);
+        }
+      });
+
+      socket.on('ping_call', async (data) => {
+        const { channelName } = data;
+        console.log(`[CALL] PING: ${channelName} from ${socket.userId}`);
+        
+        try {
+          const call = await Call.findOne({ channelName });
+          if (!call || call.status === 'ended') {
+            console.log(`[CALL] PING_REPLY: Call ${channelName} is already ended. Notifying ${socket.userId}`);
+            socket.emit('call_ended', { channelName, reason: 'sync_not_found' });
+          } else {
+            console.log(`[CALL] PING_REPLY: Call ${channelName} is still ${call.status}`);
+          }
+        } catch (err) {
+          console.error('[CALL] ERROR in ping_call:', err.message);
+        }
+      });
+
+      socket.on('call_busy', (data) => {
+        const { callerId, channelName } = data;
+        console.log(`[CALL] BUSY: ${channelName} | To: ${callerId}`);
+        this.io.to(callerId).emit('call_busy', data);
+      });
+
       socket.on('call_caption', (data) => {
         const { otherUserId, text, isFinal, channelName } = data;
-        if (!channelName) return;
-        
-        // If otherUserId is not provided, we can broadcast to the room
-        // For 1:1 calls, room is safer or direct emit
+        console.log(`[CHAT] CAPTION: ${channelName} | From: ${socket.userId}`);
         if (otherUserId) {
           this.io.to(otherUserId).emit('call_caption', {
             text,
@@ -523,161 +513,30 @@ class SocketManager {
             senderId: socket.userId,
             channelName
           });
-        } else {
-          socket.to(channelName).emit('call_caption', {
-            text,
-            isFinal,
-            senderId: socket.userId,
-            channelName
-          });
         }
       });
 
-      // Realtime Call TTS Messaging
       socket.on('call_tts_message', (data) => {
         const { otherUserId, text, channelName } = data;
-        if (!channelName || !text) return;
-
-        console.log(`[Call] TTS: From ${socket.userId} to ${otherUserId || channelName} | Msg: ${text.substring(0, 20)}...`);
-        
+        console.log(`[CHAT] TTS: ${channelName} | From: ${socket.userId}`);
         if (otherUserId) {
           this.io.to(otherUserId).emit('call_tts_message', {
             text,
             senderId: socket.userId,
             channelName
           });
-        } else {
-          socket.to(channelName).emit('call_tts_message', {
-            text,
-            senderId: socket.userId,
-            channelName
-          });
         }
       });
 
-      // Call Reactions
       socket.on('call_reaction', (data) => {
         const { otherUserId, emoji, channelName } = data;
-        if (!channelName) return;
-
+        console.log(`[CHAT] REACTION: ${emoji} | From: ${socket.userId}`);
         if (otherUserId) {
           this.io.to(otherUserId).emit('call_reaction', {
             emoji,
             senderId: socket.userId,
             channelName
           });
-        } else {
-          socket.to(channelName).emit('call_reaction', {
-            emoji,
-            senderId: socket.userId,
-            channelName
-          });
-        }
-      });
-
-      socket.on('accept_call', async (data) => {
-        const { channelName } = data;
-        const receiverId = socket.userId;
-        
-        console.log(`[CALL_ACCEPT] start | Channel: ${channelName} | Receiver: ${receiverId}`);
-
-        try {
-          // Find the call session first to get the callerId
-          const call = await Call.findOne({ channelName });
-          if (!call) {
-            console.error(`[CALL_ACCEPT] ERROR: Call session not found for channel: ${channelName}`);
-            return;
-          }
-
-          const callerId = call.caller.toString();
-          console.log(`[CALL_ACCEPT] callerId: ${callerId}`);
-          console.log(`[CALL_ACCEPT] receiverId: ${receiverId}`);
-
-          call.status = 'accepted';
-          call.startTime = Date.now();
-          await call.save();
-          console.log(`[CALL_ACCEPT] DB updated to accepted`);
-          
-          const callerSocketId = this.onlineUsers.get(callerId);
-          console.log(`[CALL_ACCEPT] callerSocketId: ${callerSocketId || 'NOT_FOUND'}`);
-
-          if (callerSocketId) {
-            this.io.to(callerSocketId).emit('call_accepted', { channelName });
-            console.log(`[CALL_ACCEPT] emit success to caller socket: ${callerSocketId}`);
-          } else {
-            console.warn(`[CALL_ACCEPT] WARNING: Caller ${callerId} not online, emitting to room fallback`);
-            this.io.to(callerId).emit('call_accepted', { channelName });
-          }
-        } catch (error) {
-          console.error('[CALL_ACCEPT] ERROR:', error.message);
-        }
-      });
-
-      socket.on('reject_call', async (data) => {
-        const { channelName } = data;
-        console.log(`[CALL_REJECT] start | Channel: ${channelName} | Receiver: ${socket.userId}`);
-        
-        try {
-          const call = await Call.findOne({ channelName });
-          if (!call) {
-            console.error(`[CALL_REJECT] ERROR: Call session not found for channel: ${channelName}`);
-            return;
-          }
-
-          const callerId = call.caller.toString();
-          console.log(`[CALL_REJECT] callerId: ${callerId}`);
-
-          call.status = 'rejected';
-          await call.save();
-          console.log(`[CALL_REJECT] DB updated to rejected`);
-          
-          this.io.to(callerId).emit('call_rejected', { channelName });
-          console.log(`[CALL_REJECT] emitted to caller: ${callerId}`);
-        } catch (error) {
-          console.error('[CALL_REJECT] ERROR:', error.message);
-        }
-      });
-
-      socket.on('end_call', async (data) => {
-        const { otherUserId, channelName } = data;
-        const userId = socket.userId;
-
-        console.log(`[Call] end_call request from ${userId} for channel: ${channelName}`);
-        
-        try {
-          // 1. Check current call state
-          const call = await Call.findOne({ channelName });
-          
-          if (!call) {
-            console.warn(`[Call] end_call ignored: Channel ${channelName} not found.`);
-            return;
-          }
-
-          if (call.status === 'ended') {
-            console.log(`[Call] end_call ignored: Channel ${channelName} already ended.`);
-            return;
-          }
-
-          // PROTECTION: Prevent end_call from cleaning up a call that was JUST accepted
-          // If the call was accepted less than 2 seconds ago, it might be a race condition from UI disposal
-          const timeSinceAccept = Date.now() - (call.startTime || 0);
-          if (call.status === 'accepted' && timeSinceAccept < 2000) {
-             console.warn(`[Call] RACE CONDITION DETECTED: Ignoring end_call received JUST after accept (${timeSinceAccept}ms)`);
-             return;
-          }
-
-          console.log(`[Call] Ending channel: ${channelName} | Initiated by: ${userId}`);
-          
-          call.status = 'ended';
-          call.endTime = Date.now();
-          await call.save();
-          
-          console.log(`[Call] DB updated to ended for ${channelName}`);
-          
-          this.io.to(otherUserId).emit('call_ended', { channelName });
-          console.log(`[Socket] call_ended emitted to ${otherUserId}`);
-        } catch (error) {
-          console.error('[CALL] End update error:', error.message);
         }
       });
 

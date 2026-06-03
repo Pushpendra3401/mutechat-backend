@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const { normalizePhoneNumber } = require('../utils/phoneUtils');
 
 const userSchema = new mongoose.Schema(
   {
@@ -71,14 +72,7 @@ const userSchema = new mongoose.Schema(
 userSchema.pre('save', async function (next) {
   // Normalize mobile number
   if (this.isModified('mobileNumber')) {
-    let digits = this.mobileNumber.replace(/\D/g, '');
-    if (digits.length === 10) {
-      this.mobileNumber = `+91${digits}`;
-    } else if (digits.length === 12 && digits.startsWith('91')) {
-      this.mobileNumber = `+${digits}`;
-    } else if (!this.mobileNumber.startsWith('+') && digits.length > 0) {
-      this.mobileNumber = `+${digits}`;
-    }
+    this.mobileNumber = normalizePhoneNumber(this.mobileNumber);
   }
 
   if (!this.isModified('password') || !this.password) {
