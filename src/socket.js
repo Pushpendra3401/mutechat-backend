@@ -380,10 +380,12 @@ class SocketManager {
 
       // 4. Calling System
       socket.on('initiate_call', async (data) => {
-        const { receiver, channelName } = data;
+        console.log('[CALL_FLOW] initiate_call received', JSON.stringify(data, null, 2));
+        const { caller, receiver, channelName, type, chatId, startTime } = data;
+        const callerId = caller._id || caller.id || socket.userId;
         const receiverId = receiver._id || receiver.id || receiver;
         
-        console.log(`[CALL] INITIATE: ${socket.userId} -> ${receiverId} | Channel: ${channelName}`);
+        console.log(`[CALL] INITIATE: ${callerId} -> ${receiverId} | Channel: ${channelName}`);
         
         try {
           const receiverUser = await User.findById(receiverId).select('fcmToken onlineStatus');
@@ -392,10 +394,23 @@ class SocketManager {
             return;
           }
 
-          // Check if receiver is online
+          // [FIX 1] CREATE CALL DOCUMENT IN MONGODB!
+          console.log('[CALL_FLOW] pending_call_created', { channelName, callerId, receiverId });
+          const newCall = await Call.create({
+            caller: callerId,
+            receiver: receiverId,
+            type: type || 'video',
+            channelName: channelName,
+            status: 'initiated',
+            startTime: startTime ? new Date(startTime) : Date.now(),
+            chatId: chatId
+          });
+          console.log('[CALL_FLOW] Call document saved to DB:', newCall._id);
+
+          // Emit incoming_call to receiver
           const receiverSocketId = this.onlineUsers.get(receiverId.toString());
           if (receiverSocketId) {
-            console.log(`[CALL] EMIT: incoming_call to socket ${receiverSocketId}`);
+            console.log('[CALL_FLOW] incoming_call_sent to', receiverSocketId);
             this.io.to(receiverSocketId).emit('incoming_call', data);
           } else {
             console.log(`[CALL] Receiver ${receiverId} is OFFLINE via socket`);
@@ -403,12 +418,12 @@ class SocketManager {
 
           // Always send push notification for calls
           if (receiverUser.fcmToken) {
-            const senderUser = await User.findById(socket.userId).select('name avatar');
+            const senderUser = await User.findById(callerId).select('name avatar');
             console.log(`[FCM] PUSH: Sending call notification to ${receiverId}`);
             await sendCallNotification(receiverUser.fcmToken, senderUser, data);
           }
         } catch (err) {
-          console.error('[FCM] ERROR in initiate_call:', err.message);
+          console.error('[CALL] ERROR in initiate_call:', err);
         }
       });
 
@@ -419,23 +434,25 @@ class SocketManager {
       });
 
       socket.on('accept_call', async (data) => {
+        console.log('[CALL_FLOW] accept_received', data);
         const { channelName } = data;
         console.log(`[CALL] ACCEPT: ${channelName} by ${socket.userId}`);
         
         try {
           const call = await Call.findOne({ channelName, status: { $in: ['initiated', 'ringing'] } });
           if (call) {
+            console.log('[CALL_FLOW] pending_call_found', { channelName, callId: call._id });
             call.status = 'accepted';
             await call.save();
             
             const callerId = call.caller.toString();
-            console.log(`[CALL] EMIT: call_accepted to caller ${callerId}`);
+            console.log('[CALL_FLOW] call_accepted_emitted to', callerId);
             this.io.to(callerId).emit('call_accepted', data);
           } else {
             console.warn(`[CALL] WARN: No pending call found for channel ${channelName} during accept`);
           }
         } catch (err) {
-          console.error('[CALL] ERROR in accept_call:', err.message);
+          console.error('[CALL] ERROR in accept_call:', err);
         }
       });
 
