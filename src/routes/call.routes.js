@@ -6,6 +6,7 @@ const { protect } = require('../middlewares/auth.middleware');
 router.use(protect);
 
 router.post('/token', callController.getCallToken);
+router.post('/interpret-gesture', callController.interpretGesture);
 router.get('/history', callController.getCallHistory);
 router.post('/history', callController.saveCallLog);
 router.delete('/history', callController.clearCallHistory);
