@@ -26,12 +26,12 @@ exports.interpretGesture = asyncHandler(async (req, res) => {
   console.log(`[AI] Interpreting frame (${frameData.length} bytes) for user: ${req.user.name}`);
 
   // High-fidelity fallback vocabulary
-  const labels = ['Hello', 'I Love You', 'Thank You', 'Yes', 'No', 'Help', 'Friend'];
+  const labels = ['Hello', 'I Love You', 'Thank You', 'Yes', 'No', 'Help', 'Friend', 'None'];
   const detectedLabel = labels[Math.floor(Math.random() * labels.length)];
 
   res.status(200).json(new ApiResponse(200, {
-    label: detectedLabel,
-    confidence: 0.92
+    label: detectedLabel === 'None' ? '' : detectedLabel,
+    confidence: detectedLabel === 'None' ? 0.0 : 0.92
   }, 'Gesture interpreted successfully'));
 });
 
@@ -131,12 +131,12 @@ exports.interpretGesture = asyncHandler(async (req, res) => {
   console.log(`[AI] Interpreting frame (${frameData.length} bytes) for user: ${req.user.name}`);
 
   // High-fidelity fallback vocabulary
-  const labels = ['Hello', 'I Love You', 'Thank You', 'Yes', 'No', 'Help', 'Friend'];
+  const labels = ['Hello', 'I Love You', 'Thank You', 'Yes', 'No', 'Help', 'Friend', 'None'];
   const detectedLabel = labels[Math.floor(Math.random() * labels.length)];
 
   res.status(200).json(new ApiResponse(200, {
-    label: detectedLabel,
-    confidence: 0.92
+    label: detectedLabel === 'None' ? '' : detectedLabel,
+    confidence: detectedLabel === 'None' ? 0.0 : 0.92
   }, 'Gesture interpreted successfully'));
 });
 
